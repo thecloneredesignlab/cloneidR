@@ -212,12 +212,16 @@ def run(path2Images,path2Pretrained,path2Save,ext, diameter, flow, cellprob):
   vis_overlay(path2Images,path2Save,ext,line_point)
 
 
+# The following block should be used only for running the script from the terminal. If you are running the script from R script, the following block should be commented out.
+# Date: July 1st, 2025, Saeed Alahamri
+""" 
 if __name__ == "__main__":
     #execute only if run as a script
     args = len(sys.argv)
     print(args)
-    if args == 6:
-      run(sys.argv[1],sys.argv[2],sys.argv[3],sys.argv[4],sys.argv[5])
+    if args == 8:
+      run(sys.argv[1],sys.argv[2],sys.argv[3],sys.argv[4],sys.argv[5],sys.argv[6],sys.argv[7])
     else:
       print('Error in number of arguments')
     #run('/Users/saeedalahmari/Downloads/stanford_images','../NCI-N87-Iter2_models_best/cellpose_residual_on_style_on_concatenation_off_train_iteration2_2022_10_03_02_31_01.132104','/Users/saeedalahmari/Downloads/stanford_images/results','.tif','30', '0.2', '0.8')
+"""
