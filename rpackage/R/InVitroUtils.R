@@ -886,10 +886,10 @@ getMRIdata<-function(id, signal="t2"){
   yml = yaml::read_yaml(paste0(system.file(package='cloneid'), '/config/config.yaml'))
   CELLSEGMENTATIONS_OUTDIR=paste0(normalizePath(yml$cellSegmentation$output),"/");
   CELLSEGMENTATIONS_INDIR=paste0(normalizePath(yml$cellSegmentation$input),"/");
-  x=list.files(paste0(CELLSEGMENTATIONS_OUTDIR,"/Images"), pattern=paste0("^",id,"_",signal,"_mni"), full.names = T)[1]
+  x=list.files(paste0(CELLSEGMENTATIONS_OUTDIR,"/Images"), pattern=paste0("^",id,"_",signal), full.names = T)[1]
   nii_mask=RNifti::readNifti(x)
   signal=gsub("_cavity","",signal)
-  x=list.files(CELLSEGMENTATIONS_INDIR, pattern=paste0("^",id,"_",signal,"_mni"), full.names = T)[1]
+  x=list.files(CELLSEGMENTATIONS_INDIR, pattern=paste0("^",id,"_",signal), full.names = T)[1]
   nii=RNifti::readNifti(x)
   return(list(nii=nii,mask=nii_mask))
 }
