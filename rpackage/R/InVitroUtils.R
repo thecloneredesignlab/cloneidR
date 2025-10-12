@@ -480,7 +480,7 @@ plotLiquidNitrogenBox <- function (rack, row) {
       rs = dbSendQuery(mydb, stmt)
       stmt = paste0("update Passaging set cellSize_um2 = ",x4DB$cellSize_um2," where id='",id,"';")
       rs = dbSendQuery(mydb, stmt)
-      stmt = paste0("update Passaging set lastModified = '",x4DB$lastModified,"' where id='",id,"';")
+      stmt = paste0("update Passaging set lastModified = ",x4DB$lastModified," where id='",id,"';")
       rs = dbSendQuery(mydb, stmt)
     }else{
 
