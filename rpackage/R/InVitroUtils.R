@@ -466,9 +466,9 @@ plotLiquidNitrogenBox <- function (rack, row) {
   
   ## Attempt to update the DB:
   if(ancestorCheck){
+    # # stmt = paste0("INSERT INTO Passaging (id, passaged_from_id1, event, date, cellCount, passage, flask, media, owner, lastModified, lastModifiedDate) ",
+    # # "VALUES ('",id ,"', '",from,"', '",event,"', '",as.character(tx),"', ",dish$dishCount,", ", passage,", ",flask,", ", parent$media, ", '", user, "', '", user, "', NOW());")
     ### Insert
-    # stmt = paste0("INSERT INTO Passaging (id, passaged_from_id1, event, date, cellCount, passage, flask, media, owner, lastModified) ",
-    # "VALUES ('",id ,"', '",from,"', '",event,"', '",as.character(tx),"', ",dish$dishCount,", ", passage,", ",flask,", ", parent$media, ", '", user, "', '", user, "');")
     stmt = paste0("INSERT INTO Passaging (",paste(names(x4DB), collapse = ", "),") ",
                   "VALUES (",paste(x4DB, collapse = ", "),");")
     rs = try(dbSendQuery(mydb, stmt))
@@ -480,8 +480,10 @@ plotLiquidNitrogenBox <- function (rack, row) {
       rs = dbSendQuery(mydb, stmt)
       stmt = paste0("update Passaging set cellSize_um2 = ",x4DB$cellSize_um2," where id='",id,"';")
       rs = dbSendQuery(mydb, stmt)
+      stmt = paste0("update Passaging set lastModified = '",x4DB$lastModified,"' where id='",id,"';")
+      rs = dbSendQuery(mydb, stmt)
     }else{
-      
+
       .wait_for_confirmation("", prompt_template = "Error encountered while updating database: no changes were made to the database. Please check id is not redundant with existing IDs, then rerun. Type yes to confirm: ", timeout = 30)
     }
   }
@@ -585,7 +587,7 @@ plotLiquidNitrogenBox <- function (rack, row) {
   CELLSEGMENTATIONS_INDIR=paste0(normalizePath(yml$cellSegmentation$input),"/");
   # QUPATH_PRJ = "~/Downloads/qproject/project.qpproj"
   # QSCRIPT = "~/Downloads/qpscript/runDetectionROI.groovy"
-  CELLPOSE_PARAM=paste0(find.package("cloneid"),filesep,"python/cellPose.param")
+  CELLPOSE_PARAM=paste0(find.package("cloneid"),filesep,"python/cellPoseSAM.param")
   PYTHON_SCRIPTS=list.files(paste0(find.package("cloneid"),filesep,"python"), pattern=".py", full.names = T)
   CELLPOSE_SCRIPT=grep("GetCount_cellPose.py",PYTHON_SCRIPTS, value = T)
   PREPROCESS_SCRIPT=grep("preprocessing.py",PYTHON_SCRIPTS, value = T)

@@ -6,8 +6,19 @@ clusterKaryotypes <- function(
     whichP          = "GenomePerspective",
     depth           = 1,
     path2lanscape   = NULL,
-    numClusters     = NULL
+    numClusters     = NULL,
+    capping         = NULL,
+    method          = "complete",
+    chrwhole        = NULL
 ){
+  if(is.null(chrwhole)){
+    devtools::source_url("https://github.com/noemiandor/Utils/blob/master/grpstats.R?raw=TRUE")
+    x <- fread("http://hgdownload.cse.ucsc.edu/goldenpath/hg19/database/cytoBand.txt.gz", 
+               col.names = c("chrom","chromStart","chromEnd","name","gieStain"))
+    chrarms=x[ , .(length = sum(chromEnd - chromStart)),by = .(chrom, arm = substring(name, 1, 1)) ]
+    chrwhole=grpstats(as.matrix(chrarms$length),chrarms$chrom, "sum")$sum
+  }
+  
   source("~/Repositories/ALFA-K/utils/sim_setup_functions.R")
   source("~/Repositories/ALFA-K/utils/ALFA-K.R")
   ploidy  <- 2
@@ -66,8 +77,8 @@ clusterKaryotypes <- function(
   
   
   # Dendrogram parameters
-  hFun <- function(x) stats::hclust(x, method = "complete"); #ward.D2
-  dFun <- chrWeightedDist; #function(x) stats::dist(x, method = "manhattan")
+  hFun <- function(x) stats::hclust(x, method = method); #ward.D2
+  dFun <- function(x) chrWeightedDist(x, chrwhole=chrwhole); #function(x) stats::dist(x, method = "manhattan")
   
   # If the user specified a number of clusters, we cluster with that many groups.
   # findBestClustering() presumably returns cluster labels from 0..(numClusters-1);
@@ -101,8 +112,12 @@ clusterKaryotypes <- function(
   }
   
   # Draw the heatmap
+  tmp=as.matrix(cnts_combined)
+  if(!is.null(capping)){
+    tmp[tmp>capping] = capping 
+  }
   hm <- heatmap.2(
-    x           = as.matrix(cnts_combined),
+    x           = tmp,
     margins     = c(15,15),
     colRow      = clusters[rownames(cnts_combined)], 
     trace       = 'none',
@@ -124,7 +139,7 @@ clusterKaryotypes <- function(
   )
   
   # Boxplot of ploidy by cluster
-  ploidy_vals <- calcPloidy(cnts_combined)
+  ploidy_vals <- calcPloidy(cnts_combined,chrwhole)
   boxplot(
     ploidy_vals ~ factor(clusters[names(ploidy_vals)], levels = unique(clusters)),
     xlab   = "Cluster",
@@ -145,7 +160,7 @@ clusterKaryotypes <- function(
   cnts_summary <- grpstats(cnts_combined, sampleID, statscols = c("mean","median"))
   
   # Name the cluster vector by sample to keep track
-  names(clusters) <- sampleID
+  names(ploidy_vals) <- names(clusters) <- sampleID
   rownames(cnts_combined) = paste0(rownames(cnts_combined),"_",sampleID)
   
   return(list(
@@ -153,7 +168,8 @@ clusterKaryotypes <- function(
     cnts        = cnts_summary,    # aggregated means/medians
     CN      = cnts_combined,      # the hierarchical clustering object
     distanceFun = dFun,            # for reference if needed
-    origins     = origins          # keep track of which origins we used
+    origins     = origins,          # keep track of which origins we used
+    ploidy_vals = ploidy_vals
   ))
 }
 
@@ -207,12 +223,7 @@ getKaryo<-function(cn,ploidy){
   
 }
 
-calcPloidy<-function(cnts){
-  x <- fread("http://hgdownload.cse.ucsc.edu/goldenpath/hg19/database/cytoBand.txt.gz", 
-             col.names = c("chrom","chromStart","chromEnd","name","gieStain"))
-  chrarms=x[ , .(length = sum(chromEnd - chromStart)),by = .(chrom, arm = substring(name, 1, 1)) ]
-  chrwhole=grpstats(as.matrix(chrarms$length),chrarms$chrom, "sum")$sum
-  
+calcPloidy<-function(cnts, chrwhole){
   ii=paste0('chr',colnames(cnts));
   ploidy=apply(cnts,1, function(x) sum(chrwhole[ii,]*x)/sum(chrwhole[ii,]))
   return(ploidy)
@@ -543,7 +554,7 @@ plotMuellerGGMuller <- function(cellLine, out_, pass, colorMapping, showPlot = T
     scale_fill_manual(values = colorMapping, name = "Clone/Identity") +
     scale_color_manual(values = colorMapping, name = "Clone/Identity") +
     theme_minimal()  + theme(plot.margin = unit(c(0, 0.2, 0.05, 0.2), "cm"))
-   ggtitle(paste("Muller Plot for", cellLine))
+  ggtitle(paste("Muller Plot for", cellLine))
   
   if (!includelegend)  muller_plot <- muller_plot + theme(legend.position = "none")
   
@@ -559,7 +570,7 @@ plotMuellerGGMuller <- function(cellLine, out_, pass, colorMapping, showPlot = T
 
 
 # weighted Manhattan distance for an *entire* matrix
-chrWeightedDist <- function(mat) {
+chrWeightedDist <- function(mat, chrwhole) {
   # vector of chromosome weights
   w <- chrwhole[paste0("chr", 1:22), 1]
   mat.w <- sweep(mat, 2, w, `*`)         # weight every column
