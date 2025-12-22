@@ -819,7 +819,8 @@ plotLiquidNitrogenBox <- function (rack, row) {
   f=grep("pred", cellPoseOut_csv, value = TRUE)
   f_a=grep("cellpose_count", cellPoseOut_csv, value = TRUE)
   f_c=grep("Confluency", cellPoseOut_csv, value = TRUE)
-  if(length(f)!=N || length(f_a)!=N || length(f_c)!=N){
+  f_m=list.files(TMP_DIR, recursive = F, pattern = "mask", full.names = TRUE)
+  if(length(f)!=N || length(f_a)!=N || length(f_c)!=N || length(f_m)!=N){
     warning("No results were kept because unexpected number of output files were detected. Likely an error was encountered while processing at least one image.")
     return()
   }
@@ -834,6 +835,10 @@ plotLiquidNitrogenBox <- function (rack, row) {
   
   sapply(f_c, function(x) 
     file.copy(x, paste0(CELLSEGMENTATIONS_OUTDIR, "Confluency"))
+  )
+  
+  sapply(f_m, function(x) 
+    file.copy(x, paste0(CELLSEGMENTATIONS_OUTDIR, "Masks"))
   )
   
   # Move image files to respective directories
