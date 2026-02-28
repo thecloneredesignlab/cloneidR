@@ -1,23 +1,55 @@
 ##origins must be sorted according to timepoint of sample acquisition
 # origins=c( "SNU-668_C_A4_seed"   , "SNU-668_P2_A18k_seed", "SNU-668_P0_A11K_seed")
 # origins=c("SNU-668_C_A24_seed","SNU-668_C_A4_seed","SNU-668_G1_A4_seed","SNU-668_G1_A10_seed" )
+# --- Load required packages ---
+# --- Load required packages ---
+# --- Load required packages ---
+if (!requireNamespace("RColorBrewer", quietly = TRUE)) {
+  install.packages("RColorBrewer")
+}
+library(RColorBrewer)
+
+if (!requireNamespace("ComplexHeatmap", quietly = TRUE)) {
+  if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+  BiocManager::install("ComplexHeatmap")
+}
+library(ComplexHeatmap)
+
+if (!requireNamespace("matlab", quietly = TRUE)) {
+  install.packages("matlab")
+}
+library(matlab)
+
+if (!requireNamespace("data.table", quietly = TRUE)) {
+  install.packages("data.table")
+}
+library(data.table)
+
+# ------------------------------
+
 clusterKaryotypes <- function(
     origins,
-    whichP          = "GenomePerspective",
-    depth           = 1,
-    path2lanscape   = NULL,
-    numClusters     = NULL,
-    capping         = NULL,
-    method          = "complete",
-    chrwhole        = NULL
+    groups, # Added groups as an argument
+    whichP = "GenomePerspective",
+    depth = 1,
+    path2lanscape = NULL,
+    numClusters = NULL,
+    capping = NULL,
+    method = "complete",
+    chrwhole = NULL,
+    chr2include = 1:22
 ){
   if(is.null(chrwhole)){
     devtools::source_url("https://github.com/noemiandor/Utils/blob/master/grpstats.R?raw=TRUE")
-    x <- fread("http://hgdownload.cse.ucsc.edu/goldenpath/hg19/database/cytoBand.txt.gz", 
-               col.names = c("chrom","chromStart","chromEnd","name","gieStain"))
+    x <- data.table::fread("http://hgdownload.cse.ucsc.edu/goldenpath/hg19/database/cytoBand.txt.gz", 
+                           col.names = c("chrom","chromStart","chromEnd","name","gieStain"))
     chrarms=x[ , .(length = sum(chromEnd - chromStart)),by = .(chrom, arm = substring(name, 1, 1)) ]
     chrwhole=grpstats(as.matrix(chrarms$length),chrarms$chrom, "sum")$sum
   }
+  
+  ii=paste0('chr',chr2include);
+  chrwhole = chrwhole[ii,,drop=F]
   
   source("~/Repositories/ALFA-K/utils/sim_setup_functions.R")
   source("~/Repositories/ALFA-K/utils/ALFA-K.R")
@@ -37,116 +69,226 @@ clusterKaryotypes <- function(
     )
     rs <- suppressWarnings(DBI::dbSendQuery(mydb, stmt))
     sps <- DBI::fetch(rs, n = -1)
+    DBI::dbClearResult(rs) # Close result set
     
-    # If depth > 1, also pull children of these clones
     if(depth > 1) {
-      stmt <- paste0(
-        "SELECT cloneID, size, alias, parent 
-         FROM Perspective 
-         WHERE parent IN (", paste(sps$cloneID, collapse=","), ")"
-      )
-      rs <- suppressWarnings(DBI::dbSendQuery(mydb, stmt))
-      sps <- DBI::fetch(rs, n=-1)
+      parent_ids_str <- paste(sps$cloneID, collapse = ",")
+      if (nchar(parent_ids_str) == 0) {
+        sps <- data.frame(cloneID=integer(), size=integer(), alias=character(), parent=integer())
+      } else {
+        stmt <- paste0(
+          "SELECT cloneID, size, alias, parent 
+            FROM Perspective 
+            WHERE parent IN (", parent_ids_str, ")"
+        )
+        rs <- suppressWarnings(DBI::dbSendQuery(mydb, stmt))
+        sps <- DBI::fetch(rs, n = -1)
+        DBI::dbClearResult(rs) # Close result set
+      }
     }
     
-    # Get the copy-number (or other) profiles for each clone
-    x <- sapply(
-      sps$cloneID, 
-      function(cid) cloneid::getSubProfiles(cloneID_or_sampleName = cid, whichP = whichP), 
-      simplify = FALSE
-    )
-    X[[biopsy]] <- do.call(cbind, x)
+    if (nrow(sps) > 0) {
+      x <- sapply(
+        sps$cloneID, 
+        function(cid) cloneid::getSubProfiles(cloneID_or_sampleName = cid, whichP = whichP), 
+        simplify = FALSE
+      )
+      X[[biopsy]] <- do.call(cbind, x)
+    } else {
+      X[[biopsy]] <- matrix(nrow = 0, ncol = 0) 
+      warning(paste("No clones found for origin:", biopsy))
+    }
   }
   
   ##############################################################################
   # 2) Merge across origins for karyotyping/clustering
   ##############################################################################
-  #   - We get CN calls from getKaryo() 
-  #   - We cluster them with findBestClustering()
   
-  # cnts is a list of data frames (one per origin) with copy-number calls
-  cnts_list  <- sapply(X, function(mat) getKaryo(t(mat), ploidy)$cn, simplify = FALSE)
+  X_filled <- X[sapply(X, function(m) !is.null(m) && (is.matrix(m) && (nrow(m) > 0 || ncol(m) > 0)))]
+  if(length(X_filled) == 0) {
+    stop("No valid data loaded from any origin.")
+  }
   
-  # 'sampleID' identifies the biopsy/origin for each row in combined data
+  cnts_list  <- sapply(X_filled, function(mat) getKaryo(t(mat), ploidy)$cn, simplify = FALSE)
+  cnts_list_valid <- cnts_list[!sapply(cnts_list, is.null)]
+  
   sampleID <- unlist(
-    sapply(names(cnts_list), function(x) rep(x, nrow(cnts_list[[x]])))
+    sapply(names(cnts_list_valid), function(x) rep(x, nrow(cnts_list_valid[[x]])))
   )
+  names(sampleID) <- NULL 
   
-  # Combine all rows from all origins
-  cnts_combined <- do.call(rbind, cnts_list)
+  cnts_combined <- do.call(rbind, cnts_list_valid)
+  cnts_combined = cnts_combined[, colnames(cnts_combined) %in% as.character(chr2include)]
+  # print(head(cnts_combined))
   
+  if(nrow(cnts_combined) == 0){
+    stop("No copy number data to cluster after processing.")
+  }
   
-  # Dendrogram parameters
-  hFun <- function(x) stats::hclust(x, method = method); #ward.D2
-  dFun <- function(x) chrWeightedDist(x, chrwhole=chrwhole); #function(x) stats::dist(x, method = "manhattan")
+  hFun <- function(x) stats::hclust(x, method = method);
+  dFun <- function(x) chrWeightedDist(x, chrwhole=chrwhole); 
   
-  # If the user specified a number of clusters, we cluster with that many groups.
-  # findBestClustering() presumably returns cluster labels from 0..(numClusters-1);
-  # The +1 is presumably to shift them to 1..numClusters range.
   clusters <- findBestClustering(cnts_combined, numClusters = numClusters, hFun=hFun, dFun = dFun) + 1
+  names(clusters) <- NULL
   
   ##############################################################################
-  # 3) Plot heatmap with hierarchical clustering to extract dendrogram 
+  # 3) Plot heatmap with hierarchical clustering
   ##############################################################################
   tmp <- substr(paste(origins, collapse = "__"), 1, 90)
   pdf(paste0(tmp, ".pdf"))
   
-  # Color each sampleID differently (for RowSideColors)
-  uniqueIDs <- unique(sampleID)
-  colVec    <- rep("NA", length(uniqueIDs))
-  names(colVec) <- uniqueIDs
+  # --- MODIFIED: Annotation Block (Re-ordered for robustness) ---
   
-  # Example scheme: control is gray, everything else from a Brewer palette
-  idxControl <- grep("C_", names(colVec))  # or any other pattern for control
-  colVec[idxControl] <- gray.colors(length(idxControl))
+  # 1. Create the Replicate-to-Lineage map
+  if (!exists("groups")) {
+    stop("The 'groups' object defining lineages is not found. Please define it.")
+  }
+  replicate_to_lineage_map <- list()
+  for (cell_line in names(groups)) {
+    for (lineage in names(groups[[cell_line]])) {
+      for (replicate in groups[[cell_line]][[lineage]]) {
+        replicate_to_lineage_map[[replicate]] <- lineage
+      }
+    }
+  }
   
-  # The rest get colored from a palette
+  # 2. Create annotation vectors
+  lineage_names_vector <- unlist(replicate_to_lineage_map[sampleID])
+  lineage_names_vector[is.na(lineage_names_vector)] <- "Unknown" 
+  replicate_vector <- sampleID
+  names(replicate_vector) <- NULL
+  names(lineage_names_vector) <- NULL 
+  
+  # 3. Create the annotation data frame FIRST
+  row_anno_df <- data.frame(
+    Replicate = as.factor(replicate_vector),
+    Lineage = as.factor(lineage_names_vector),
+    Cluster = as.factor(clusters)
+  )
+  
+  # 4. Build Color Map for Replicates (based on factor levels)
+  replicate_levels <- levels(row_anno_df$Replicate)
+  colVec <- rep("NA", length(replicate_levels))
+  names(colVec) <- replicate_levels
+  
+  idxControl <- grep("C_", names(colVec))
+  if (length(idxControl) > 0) {
+    colVec[idxControl] <- gray.colors(length(idxControl))
+  }
   remaining <- setdiff(seq_along(colVec), idxControl)
   if(length(remaining) > 0) {
-    colPalette <- brewer.pal(min(length(remaining), 12), "Paired")
+    colPalette <- RColorBrewer::brewer.pal(min(length(remaining), 12), "Paired")
     if(length(remaining) > length(colPalette)) {
-      # Extend the palette if needed
       colPalette <- colorRampPalette(colPalette)(length(remaining))
     }
     colVec[remaining] <- colPalette[seq_along(remaining)]
   }
+  if("Unknown" %in% names(colVec)) colVec["Unknown"] <- "grey"
   
-  # Draw the heatmap
-  tmp=as.matrix(cnts_combined)
-  if(!is.null(capping)){
-    tmp[tmp>capping] = capping 
+  # 5. Build Color Map for Lineages (based on factor levels)
+  lineage_levels <- levels(row_anno_df$Lineage)
+  lineageColMap <- rep(NA, length(lineage_levels))
+  names(lineageColMap) <- lineage_levels
+  
+  # --- ASSIGN CUSTOM COLORS (NEW LOGIC) ---
+  if ("oxygen_late" %in% names(lineageColMap))   lineageColMap["oxygen_late"]   <- "gray50"
+  if ("oxygen_early" %in% names(lineageColMap))  lineageColMap["oxygen_early"]  <- "#654321" # Dark Brown
+  if ("control_early" %in% names(lineageColMap)) lineageColMap["control_early"] <- "blue"
+  
+  idxOtherControls <- grep("control", names(lineageColMap)[is.na(lineageColMap)], ignore.case = TRUE)
+  otherControlNames <- names(lineageColMap)[is.na(lineageColMap)][idxOtherControls]
+  if (length(otherControlNames) > 0) {
+    lineageColMap[otherControlNames] <- "gray75"
   }
-  hm <- heatmap.2(
-    x           = tmp,
-    margins     = c(15,15),
-    colRow      = clusters[rownames(cnts_combined)], 
-    trace       = 'none',
-    Colv        = TRUE,
-    dendrogram  = "row",
-    RowSideColors = colVec[sampleID],
-    key.xlab    = "copy number",
-    key.title   = "",
-    col         = matlab::fliplr(rainbow(20))[5:12],
-    hclustfun   = hFun,
-    distfun     = dFun
+  if ("Unknown" %in% names(lineageColMap) & is.na(lineageColMap["Unknown"])) {
+    lineageColMap["Unknown"] <- "grey20"
+  }
+  
+  remainingLineages <- names(lineageColMap)[is.na(lineageColMap)]
+  if(length(remainingLineages) > 0) {
+    n_colors_needed <- length(remainingLineages)
+    n_palette_max <- 12 
+    colPaletteLineage <- RColorBrewer::brewer.pal(min(n_colors_needed, n_palette_max), "Set3")
+    if(n_colors_needed > length(colPaletteLineage)) {
+      colPaletteLineage <- colorRampPalette(colPaletteLineage)(n_colors_needed)
+    }
+    lineageColMap[remainingLineages] <- colPaletteLineage[seq_along(remainingLineages)]
+  }
+  lineageColMap[is.na(lineageColMap)] <- "black" # Final safety net
+  # --- END CUSTOM COLOR LOGIC ---
+  
+  # 6. Build Color Map for Clusters (based on factor levels)
+  cluster_levels <- levels(row_anno_df$Cluster)
+  n_clusters <- length(cluster_levels)
+  cluster_palette <- RColorBrewer::brewer.pal(max(3, min(9, n_clusters)), "Set1")
+  if (n_clusters > 9) { 
+    cluster_palette <- colorRampPalette(cluster_palette)(n_clusters)
+  } else if (n_clusters > 0) {
+    cluster_palette <- cluster_palette[1:n_clusters] 
+  }
+  clusterColMap <- setNames(cluster_palette, cluster_levels)
+  
+  # 7. Create the final color map list
+  anno_colors <- list(
+    Replicate = colVec,
+    Lineage = lineageColMap,
+    Cluster = clusterColMap
   )
   
-  legend(
-    "topright",
-    legend = names(colVec),
-    fill   = colVec,
-    cex    = 0.5
+  # 8. Create the RowAnnotation object
+  ha_row = ComplexHeatmap::rowAnnotation(df = row_anno_df, col = anno_colors)
+  
+  # --- END ANNOTATION BLOCK ---
+  
+  
+  mat=as.matrix(cnts_combined)
+  if(!is.null(capping)){
+    mat[mat>capping] = capping 
+  }
+  
+  # --- `ComplexHeatmap` call ---
+  row_dend <- hclust(dFun(mat), method = method)
+  
+  ht_plot <- ComplexHeatmap::Heatmap(
+    mat, 
+    name = "Copy Number", 
+    cluster_rows = row_dend,
+    row_title = NULL,     
+    show_row_names = FALSE,
+    cluster_columns = TRUE,
+    col = matlab::fliplr(rainbow(20))[5:12],
+    left_annotation = ha_row 
   )
   
-  # Boxplot of ploidy by cluster
+  # Draw the plot
+  ComplexHeatmap::draw(ht_plot, 
+                       heatmap_legend_side = "bottom", 
+                       annotation_legend_side = "right"
+  )
+  
+  # --- Boxplot Block ---
   ploidy_vals <- calcPloidy(cnts_combined,chrwhole)
-  boxplot(
-    ploidy_vals ~ factor(clusters[names(ploidy_vals)], levels = unique(clusters)),
-    xlab   = "Cluster",
-    ylab   = "Ploidy",
-    main   = "",
-    col    = unique(clusters)
-  )
+  names(clusters) <- sampleID # Re-add names for the boxplot formula
+  
+  if (any(is.finite(ploidy_vals))) {
+    plot_df <- data.frame(
+      ploidy = ploidy_vals,
+      cluster_label = factor(clusters, levels = unique(clusters))
+    )
+    
+    boxplot(
+      ploidy ~ cluster_label,
+      data = plot_df,
+      xlab   = "Cluster",
+      ylab   = "Ploidy",
+      main   = "",
+      col    = unique(clusters)
+    )
+  } else {
+    warning("Could not calculate finite ploidy values. Skipping ploidy boxplot.")
+    plot(1, type="n", axes=FALSE, xlab="", ylab="")
+    text(1, 1, "Ploidy boxplot skipped:\nNo finite ploidy values calculated.")
+  }
   
   dev.off()
   
@@ -154,24 +296,22 @@ clusterKaryotypes <- function(
   # 4) Summarize and return
   ##############################################################################
   
-  # Combine the results by sample
-  # grpstats() presumably aggregates mean/median by sample ID
-  # (This was in your original code.)
   cnts_summary <- grpstats(cnts_combined, sampleID, statscols = c("mean","median"))
   
-  # Name the cluster vector by sample to keep track
   names(ploidy_vals) <- names(clusters) <- sampleID
   rownames(cnts_combined) = paste0(rownames(cnts_combined),"_",sampleID)
   
   return(list(
-    clusters    = clusters,        # numeric cluster label per row in cnts_combined
-    cnts        = cnts_summary,    # aggregated means/medians
-    CN      = cnts_combined,      # the hierarchical clustering object
-    distanceFun = dFun,            # for reference if needed
-    origins     = origins,          # keep track of which origins we used
+    clusters    = clusters,        
+    cnts        = cnts_summary,    
+    CN        = cnts_combined,    
+    distanceFun = dFun,            
+    origins     = origins,         
     ploidy_vals = ploidy_vals
   ))
 }
+
+
 
 
 findBestClustering<-function(allKaryo, numClusters=NULL, hFun=function(x) hclust(x, method="ward.D2"), dFun = function(x) dist(x, method="manhattan")){
@@ -223,7 +363,14 @@ getKaryo<-function(cn,ploidy){
   
 }
 
-calcPloidy<-function(cnts, chrwhole){
+calcPloidy<-function(cnts, chrwhole=NULL){
+  if(is.null(chrwhole)){ 
+    devtools::source_url("https://github.com/noemiandor/Utils/blob/master/grpstats.R?raw=TRUE")
+    x <- data.table::fread("http://hgdownload.cse.ucsc.edu/goldenpath/hg19/database/cytoBand.txt.gz",
+                           col.names = c("chrom","chromStart","chromEnd","name","gieStain"))
+    chrarms=x[ , .(length = sum(chromEnd - chromStart)),by = .(chrom, arm = substring(name, 1, 1)) ]
+    chrwhole=grpstats(as.matrix(chrarms$length),chrarms$chrom, "sum")$sum
+  }
   ii=paste0('chr',colnames(cnts));
   ploidy=apply(cnts,1, function(x) sum(chrwhole[ii,]*x)/sum(chrwhole[ii,]))
   return(ploidy)
@@ -572,7 +719,24 @@ plotMuellerGGMuller <- function(cellLine, out_, pass, colorMapping, showPlot = T
 # weighted Manhattan distance for an *entire* matrix
 chrWeightedDist <- function(mat, chrwhole) {
   # vector of chromosome weights
-  w <- chrwhole[paste0("chr", 1:22), 1]
-  mat.w <- sweep(mat, 2, w, `*`)         # weight every column
+  w <- chrwhole[, 1]
+  
+  # Check if matrix has been transposed by heatmap.2
+  if (ncol(mat) == length(w)) {
+    # It's the original matrix (e.g., 86 samples x 22 chromosomes)
+    # Apply weights to COLUMNS (MARGIN = 2)
+    mat.w <- sweep(mat, 2, w, `*`)
+    
+  } else if (nrow(mat) == length(w)) {
+    # It's the transposed matrix (e.g., 22 chromosomes x 86 samples)
+    # Apply weights to ROWS (MARGIN = 1)
+    mat.w <- sweep(mat, 1, w, `*`)
+    
+  } else {
+    # Stop if dimensions don't match, as a safeguard
+    stop("Matrix dimensions do not match the length of the weight vector.")
+  }
+  
+  # Calculate the final weighted distance
   dist(mat.w, method = "manhattan") / sum(w)
 }
