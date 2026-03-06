@@ -360,10 +360,15 @@ plotLiquidNitrogenBox <- function (rack, row) {
   stmt = paste0("select * from Passaging where id = '",from,"'");
   rs = suppressWarnings(dbSendQuery(mydb, stmt))
   parent = fetch(rs, n=-1)
+  stmt = paste0("select * from Passaging where id = '",id,"'");
+  rs = suppressWarnings(dbSendQuery(mydb, stmt))
+  this = fetch(rs, n=-1)
   
   ### Checks
   CHECKRESULT="pass"
-  if(nrow(parent)==0){
+  if(nrow(this)>0){
+    CHECKRESULT=paste(id,"already exists in table Passaging. Choose a different id.")
+  }else if(nrow(parent)==0){
     CHECKRESULT=paste(from,"does not exist in table Passaging")
   }else if(parent$event !=otherevent){
     CHECKRESULT=paste(from,"is not a",otherevent,". You must do",event,"from a",otherevent)
@@ -466,9 +471,9 @@ plotLiquidNitrogenBox <- function (rack, row) {
   
   ## Attempt to update the DB:
   if(ancestorCheck){
+    # # stmt = paste0("INSERT INTO Passaging (id, passaged_from_id1, event, date, cellCount, passage, flask, media, owner, lastModified, lastModifiedDate) ",
+    # # "VALUES ('",id ,"', '",from,"', '",event,"', '",as.character(tx),"', ",dish$dishCount,", ", passage,", ",flask,", ", parent$media, ", '", user, "', '", user, "', NOW());")
     ### Insert
-    # stmt = paste0("INSERT INTO Passaging (id, passaged_from_id1, event, date, cellCount, passage, flask, media, owner, lastModified) ",
-    # "VALUES ('",id ,"', '",from,"', '",event,"', '",as.character(tx),"', ",dish$dishCount,", ", passage,", ",flask,", ", parent$media, ", '", user, "', '", user, "');")
     stmt = paste0("INSERT INTO Passaging (",paste(names(x4DB), collapse = ", "),") ",
                   "VALUES (",paste(x4DB, collapse = ", "),");")
     rs = try(dbSendQuery(mydb, stmt))
@@ -480,8 +485,10 @@ plotLiquidNitrogenBox <- function (rack, row) {
       rs = dbSendQuery(mydb, stmt)
       stmt = paste0("update Passaging set cellSize_um2 = ",x4DB$cellSize_um2," where id='",id,"';")
       rs = dbSendQuery(mydb, stmt)
+      stmt = paste0("update Passaging set lastModified = ",x4DB$lastModified," where id='",id,"';")
+      rs = dbSendQuery(mydb, stmt)
     }else{
-      
+
       .wait_for_confirmation("", prompt_template = "Error encountered while updating database: no changes were made to the database. Please check id is not redundant with existing IDs, then rerun. Type yes to confirm: ", timeout = 30)
     }
   }
@@ -585,7 +592,7 @@ plotLiquidNitrogenBox <- function (rack, row) {
   CELLSEGMENTATIONS_INDIR=paste0(normalizePath(yml$cellSegmentation$input),"/");
   # QUPATH_PRJ = "~/Downloads/qproject/project.qpproj"
   # QSCRIPT = "~/Downloads/qpscript/runDetectionROI.groovy"
-  CELLPOSE_PARAM=paste0(find.package("cloneid"),filesep,"python/cellPose.param")
+  CELLPOSE_PARAM=paste0(find.package("cloneid"),filesep,"python/cellPoseSAM.param")
   PYTHON_SCRIPTS=list.files(paste0(find.package("cloneid"),filesep,"python"), pattern=".py", full.names = T)
   CELLPOSE_SCRIPT=grep("GetCount_cellPose.py",PYTHON_SCRIPTS, value = T)
   PREPROCESS_SCRIPT=grep("preprocessing.py",PYTHON_SCRIPTS, value = T)
@@ -817,7 +824,8 @@ plotLiquidNitrogenBox <- function (rack, row) {
   f=grep("pred", cellPoseOut_csv, value = TRUE)
   f_a=grep("cellpose_count", cellPoseOut_csv, value = TRUE)
   f_c=grep("Confluency", cellPoseOut_csv, value = TRUE)
-  if(length(f)!=N || length(f_a)!=N || length(f_c)!=N){
+  f_m=list.files(TMP_DIR, recursive = F, pattern = "mask", full.names = TRUE)
+  if(length(f)!=N || length(f_a)!=N || length(f_c)!=N || length(f_m)!=N){
     warning("No results were kept because unexpected number of output files were detected. Likely an error was encountered while processing at least one image.")
     return()
   }
@@ -832,6 +840,10 @@ plotLiquidNitrogenBox <- function (rack, row) {
   
   sapply(f_c, function(x) 
     file.copy(x, paste0(CELLSEGMENTATIONS_OUTDIR, "Confluency"))
+  )
+  
+  sapply(f_m, function(x) 
+    file.copy(x, paste0(CELLSEGMENTATIONS_OUTDIR, "Masks"))
   )
   
   # Move image files to respective directories
@@ -886,10 +898,10 @@ getMRIdata<-function(id, signal="t2"){
   yml = yaml::read_yaml(paste0(system.file(package='cloneid'), '/config/config.yaml'))
   CELLSEGMENTATIONS_OUTDIR=paste0(normalizePath(yml$cellSegmentation$output),"/");
   CELLSEGMENTATIONS_INDIR=paste0(normalizePath(yml$cellSegmentation$input),"/");
-  x=list.files(paste0(CELLSEGMENTATIONS_OUTDIR,"/Images"), pattern=paste0("^",id,"_",signal,"_mni"), full.names = T)[1]
+  x=list.files(paste0(CELLSEGMENTATIONS_OUTDIR,"/Images"), pattern=paste0("^",id,"_",signal), full.names = T)[1]
   nii_mask=RNifti::readNifti(x)
   signal=gsub("_cavity","",signal)
-  x=list.files(CELLSEGMENTATIONS_INDIR, pattern=paste0("^",id,"_",signal,"_mni"), full.names = T)[1]
+  x=list.files(CELLSEGMENTATIONS_INDIR, pattern=paste0("^",id,"_",signal), full.names = T)[1]
   nii=RNifti::readNifti(x)
   return(list(nii=nii,mask=nii_mask))
 }
