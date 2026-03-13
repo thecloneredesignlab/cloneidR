@@ -851,7 +851,9 @@ plotLiquidNitrogenBox <- function (rack, row) {
   f_m <- list.files(TMP_DIR, recursive = TRUE, pattern = "mask", full.names = TRUE)
   cellPoseMsk  <- grep("_cp_masks\\.png$", f_m, value = TRUE)
   tissueSegMsk <- grep("_cp_masks\\.png$", f_m, value = TRUE, invert = TRUE)
-  if(length(f)!=N || length(f_a)!=N || length(f_c)!=N || length(f_m)!=N){
+  # Count check uses cellPoseMsk (one per input image), not f_m which also includes
+  # tissue-segmentation _mask.png files from the Confluency subfolder.
+  if(length(f)!=N || length(f_a)!=N || length(f_c)!=N || length(cellPoseMsk)!=N){
     warning("No results were kept because unexpected number of output files were detected. Likely an error was encountered while processing at least one image.")
     return()
   }
