@@ -18,6 +18,7 @@
 
 seed <- function(id, from, cellCount, flask, tx = Sys.time(), media=NULL, excludeOption=F, preprocessing=T, param=NULL, transactionId=0,
                  message_fn=NULL, input_fn=NULL){
+  functionName <- as.character(match.call()[[1]])
   x=.seed_or_harvest(event = "seeding", id=id, from = from, cellCount = cellCount, tx = tx, flask = flask, media = media, excludeOption=excludeOption, preprocessing=preprocessing, param=param, transactionId=transactionId,
                      message_fn=message_fn, input_fn=input_fn)
   return(x)
@@ -25,6 +26,7 @@ seed <- function(id, from, cellCount, flask, tx = Sys.time(), media=NULL, exclud
 
 harvest <- function(id, from, cellCount, tx = Sys.time(), media=NULL, excludeOption=F, preprocessing=T, param=NULL, transactionId=0,
                     message_fn=NULL, input_fn=NULL){
+  functionName <- as.character(match.call()[[1]])
   x=.seed_or_harvest(event = "harvest", id=id, from=from, cellCount = cellCount, tx = tx, flask = NULL, media = media, excludeOption=excludeOption, preprocessing=preprocessing, param=param, transactionId=transactionId,
                      message_fn=message_fn, input_fn=input_fn)
   return(x)
@@ -32,12 +34,14 @@ harvest <- function(id, from, cellCount, tx = Sys.time(), media=NULL, excludeOpt
 
 inject <- function(mouseID, from, cellCount, tx = Sys.time(), strain, injection_type=23,
                    message_fn=NULL, input_fn=NULL){
+  functionName <- as.character(match.call()[[1]])
   x=.seed_or_harvest(event = "seeding", id=mouseID, from = from, cellCount = cellCount, tx = tx, flask = injection_type, media = strain, excludeOption=F, preprocessing=F, param=NULL, inject=injection_type,
                      message_fn=message_fn, input_fn=input_fn)
 }
 
 resect <- function(id, from, weight_mg, size_cubicmm, tx = Sys.time(), as='harvest',
                    message_fn=NULL, input_fn=NULL){
+  functionName <- as.character(match.call()[[1]])
   x=.seed_or_harvest(event = as, id=id, from=from, cellCount = size_cubicmm, tx = tx, flask = 'NULL', media = NULL, excludeOption=F, preprocessing=F, param=NULL, resect=weight_mg,
                      message_fn=message_fn, input_fn=input_fn)
   return(x)
@@ -54,14 +58,14 @@ follow_up <- function(event_id, diagnosis_id, treatment, path2segmentationresult
 
 init <- function(id, cellLine, cellCount, tx = Sys.time(), media=NULL, flask=NULL, preprocessing=T, as='harvest', path2segmentationresults=NULL){
   mydb = connect2DB()
-  
-  dish = list(dishCount=cellCount, cellSize="NULL", dishAreaOccupied="NULL");
+
+  dish = list(dishCount=cellCount, cellSize="NULL", dishAreaOccupied="NULL")
   if (!is.null(path2segmentationresults)){
     ## Currently here we deal with MRI images exclusively:
     dish = .readMRISegmentationsOutput(id, path2segmentationresults)
   }else if(!is.null(flask)){
     dishSurfaceArea_cm2 = .readDishSurfaceArea_cm2(flask, mydb)
-    dish = .readCellSegmentationsOutput(id= id, from=cellLine, cellLine = cellLine, dishSurfaceArea_cm2 = dishSurfaceArea_cm2, cellCount = cellCount, preprocessing=preprocessing);
+    dish = .readCellSegmentationsOutput(id= id, from=cellLine, cellLine = cellLine, dishSurfaceArea_cm2 = dishSurfaceArea_cm2, cellCount = cellCount, preprocessing=preprocessing)
   }
   if(is.null(media)){
     media = "NULL"
@@ -69,60 +73,49 @@ init <- function(id, cellLine, cellCount, tx = Sys.time(), media=NULL, flask=NUL
   if(is.null(flask)){
     flask = "NULL"
   }
-  
-  rs = suppressWarnings(dbSendQuery(mydb, "SELECT user()"));
-  user=fetch(rs, n=-1)[,1];
-  
+
+  user = suppressWarnings(.db_fetch("SELECT user()", conn = mydb))[,1]
+
   stmt = paste0("INSERT INTO Passaging (id, cellLine, event, date, cellCount, cellSize_um2, areaOccupied_um2, passage, flask, media, owner, lastModified) ",
                 "VALUES ('",id ,"', '",cellLine,"', '",as,"', '",as.character(tx),"', ",dish$dishCount,", ", dish$cellSize,", ", dish$dishAreaOccupied,", ", 1,", ",flask,", ", media, ", '", user, "', '", user, "');")
-  
+
   print(stmt)
-  rs = dbSendQuery(mydb, stmt)
-  
-  dbClearResult(dbListResults(mydb)[[1]])
+  .db_exec(stmt, conn = mydb)
+
   dbDisconnect(mydb)
 }
 
 
 feed <- function(id, tx=Sys.time()){
-  library(RMySQL)
-  mydb = connect2DB()
-  
-  stmt = paste0("select * from Passaging where id = '",id,"'");
-  rs = suppressWarnings(dbSendQuery(mydb, stmt))
-  kids = fetch(rs, n=-1)
-  
+  functionName <- as.character(match.call()[[1]])
+
+  stmt = paste0("select * from Passaging where id = '",id,"'")
+  kids = .db_fetch(stmt)
+
   ### Checks
   if (kids$event=="harvest"){
-    print("Cannot feed cells that have already been harvested.", quote = F); 
+    print("Cannot feed cells that have already been harvested.", quote = F);
     return();
   }
-  
+
   priorfeedings = kids[grep("feeding",names(kids),value=T)]
   ## Next un-occupied feeding index
   nextI = apply(!is.na(priorfeedings),1,sum)+1
   if(nextI>length(priorfeedings)){
-    print(paste0("Cannot record more than ",length(priorfeedings)," feedings. Add additional feeding column first."), quote = F); 
+    print(paste0("Cannot record more than ",length(priorfeedings)," feedings. Add additional feeding column first."), quote = F);
     return()
   }
-  
-  ### Insert
-  stmt = paste0("UPDATE Passaging SET ",names(priorfeedings)[nextI]," = '",as.character(tx),"' where id = '",id ,"'") 
-  rs = dbSendQuery(mydb, stmt)
-  print(paste("Feeding for",id,"recorded at",tx), quote = F);
-  
-  dbClearResult(dbListResults(mydb)[[1]])
-  dbDisconnect(mydb)
+
+  ### Update
+  stmt = paste0("UPDATE Passaging SET ",names(priorfeedings)[nextI]," = '",as.character(tx),"' where id = '",id ,"'")
+  .db_exec(stmt)
+  print(paste("Feeding for",id,"recorded at",tx), quote = F)
 }
 
-## Read dishSurfaceArea_cm2 of this flask 
+## Read dishSurfaceArea_cm2 of this flask
 .readDishSurfaceArea_cm2 <- function(flask, mydb = NULL){
-  if(is.null(mydb)){
-    mydb = connect2DB()
-  }
   stmt = paste0("select dishSurfaceArea_cm2 from Flask where id = ", flask)
-  rs = suppressWarnings(dbSendQuery(mydb, stmt))
-  dishSurfaceArea_cm2 = fetch(rs, n=-1)
+  dishSurfaceArea_cm2 = suppressWarnings(.db_fetch(stmt, conn = mydb))
   if(nrow(dishSurfaceArea_cm2)==0){
     print("Flask does not exist in database or its surface area is not specified")
     stopifnot(nrow(dishSurfaceArea_cm2)>0)
@@ -132,16 +125,11 @@ feed <- function(id, tx=Sys.time()){
 
 
 getPedigreeTree <- function (cellLine = cellLine, id = NULL, cex = 0.5){
-  library(RMySQL)
   library(ape)
   if (is.null(id)) {
-    mydb = connect2DB()
-    stmt = paste0("select * from Passaging where cellLine = '", 
+    stmt = paste0("select * from Passaging where cellLine = '",
                   cellLine, "'")
-    rs = suppressWarnings(dbSendQuery(mydb, stmt))
-    kids = fetch(rs, n = -1)
-    dbClearResult(dbListResults(mydb)[[1]])
-    dbDisconnect(mydb)
+    kids = suppressWarnings(.db_fetch(stmt))
   } else {
     kids = findAllDescendandsOf(id)
   }
@@ -235,20 +223,12 @@ findAllDescendandsOf <-function(ids, mydb = NULL, recursive = T, verbose = T){
 
 
 readGrowthRate <- function(cellLine){
-  library(RMySQL)
   cmd = paste0("select P2.*, P1.cellCount, P2.cellCount, DATEDIFF(P2.date, P1.date), POWER(P2.cellCount / P1.cellCount, 1 / DATEDIFF(P2.date, P1.date)) as GR_per_day",
                " FROM Passaging P1 JOIN Passaging P2",
                " ON P1.id = P2.passaged_from_id1",
-               " WHERE P2.event='harvest' and P1.cellLine='",cellLine,"'") 
+               " WHERE P2.event='harvest' and P1.cellLine='",cellLine,"'")
   print(cmd, quote = F)
-  
-  mydb = connect2DB()
-  
-  rs = dbSendQuery(mydb, cmd)
-  kids = fetch(rs, n=-1)
-  tmp = dbClearResult(dbListResults(mydb)[[1]])
-  tmp = dbDisconnect(mydb)
-  return(kids)
+  return(.db_fetch(cmd))
 }
 
 
@@ -271,11 +251,7 @@ populateLiquidNitrogenRacks <-function(rackID){
 
 
 plotCellLineHistory<-function(){
-  library(RMySQL)
-  mydb = connect2DB()
-  rs = dbSendQuery(mydb, "select name, year_of_first_report, doublingTime_hours from CellLinesAndPatients where year_of_first_report >0;")
-  kids = fetch(rs, n=-1)
-  
+  kids = .db_fetch("select name, year_of_first_report, doublingTime_hours from CellLinesAndPatients where year_of_first_report >0;")
   kids = kids[sort(kids$year_of_first_report, index.return=T)$ix,]
   year = as.numeric(format(Sys.time(), "%Y"))
   par(mai = c(0.85,1,0.5,0.5))
@@ -284,15 +260,10 @@ plotCellLineHistory<-function(){
   axis(2, at=1:nrow(kids), labels=kids$name, las=2)
   # sapply(1:nrow(kids), function(i) lines(c(2017,2018), rep(i,2), col="red", lwd=3))
   # legend("topleft", c("History of cell line", "Sc-Seq experiments"), fill=c("blue","red"))
-  
-  dbClearResult(dbListResults(mydb)[[1]])
-  dbDisconnect(mydb)
   return(kids)
 }
 
 updateLiquidNitrogen <- function(id, cellCount, rack, row, boxRow, boxColumn){
-  library(RMySQL)
-  mydb = connect2DB()
   cmd=paste0("UPDATE LiquidNitrogen as x SET ",
              "x.id = '",id,"',",
              "x.cellCount = ",cellCount," WHERE ",
@@ -301,16 +272,10 @@ updateLiquidNitrogen <- function(id, cellCount, rack, row, boxRow, boxColumn){
              "x.BoxRow = '",boxRow,"' AND ",
              "x.BoxColumn = '",boxColumn,"'");
   print(cmd)
-  rs = dbSendQuery(mydb, cmd);
-  
-  dbClearResult(dbListResults(mydb)[[1]])
-  dbDisconnect(mydb)
-  
+  .db_exec(cmd)
 }
 
 removeFromLiquidNitrogen <- function(rack, row, boxRow, boxColumn){
-  library(RMySQL)
-  mydb = connect2DB()
   cmd=paste0("UPDATE LiquidNitrogen as x SET ",
              "x.id = NULL,",
              "x.cellCount = 0 WHERE ",
@@ -319,41 +284,33 @@ removeFromLiquidNitrogen <- function(rack, row, boxRow, boxColumn){
              "x.BoxRow = '",boxRow,"' AND ",
              "x.BoxColumn = '",boxColumn,"'");
   print(cmd)
-  rs = dbSendQuery(mydb, cmd);
-  
-  dbClearResult(dbListResults(mydb)[[1]])
-  dbDisconnect(mydb)
+  .db_exec(cmd)
 }
 
 plotLiquidNitrogenBox <- function (rack, row) {
-  library(RMySQL)
-  mydb = connect2DB()
-  cmd = paste0("select * from LiquidNitrogen as x where ", "x.Rack = '", 
+  cmd = paste0("select * from LiquidNitrogen as x where ", "x.Rack = '",
                rack, "' AND ", "x.Row = '", row,"'")
   print(cmd)
-  rs = dbSendQuery(mydb, cmd)
-  kids = fetch(rs, n = -1)
+  kids = .db_fetch(cmd)
   kids$id[is.na(kids$id)] = "NA"
   rc = apply(kids, 2, unique)
   par(mfrow = c(2, 2), mai = c(0, 0.5, 0.5, 0))
-  plot(c(1, length(rc$BoxColumn)), c(1, length(rc$BoxRow)), 
-       col = "white", yaxt = "n", xaxt = "n", xlab = "", ylab = "", 
-       main = paste("Rack", rack, "; Row", row), ylim = rev(range(c(1, 
+  plot(c(1, length(rc$BoxColumn)), c(1, length(rc$BoxRow)),
+       col = "white", yaxt = "n", xaxt = "n", xlab = "", ylab = "",
+       main = paste("Rack", rack, "; Row", row), ylim = rev(range(c(1,
                                                                     length(rc$BoxRow)))))
-  axis(1, at = 1:length(rc$BoxColumn), labels = rc$BoxColumn, 
+  axis(1, at = 1:length(rc$BoxColumn), labels = rc$BoxColumn,
        las = 1)
   axis(2, at = 1:length(rc$BoxRow), labels = rc$BoxRow, las = 2)
   cols = gray.colors(length(rc$id) * 1.2)[1:length(rc$id)]
   names(cols) = unique(rc$id)
   cols["NA"] = "white"
   for (i in 1:nrow(kids)) {
-    points(match(kids$BoxColumn[i], rc$BoxColumn), match(kids$BoxRow[i], 
+    points(match(kids$BoxColumn[i], rc$BoxColumn), match(kids$BoxRow[i],
                                                          rc$BoxRow), col = cols[kids$id[i]], pch = 20, cex = 4)
   }
   plot(1, 1, axes = F, col = "white")
   legend("topleft", names(cols), fill = cols)
-  dbClearResult(dbListResults(mydb)[[1]])
-  dbDisconnect(mydb)
 }
 
 
@@ -724,12 +681,8 @@ plotLiquidNitrogenBox <- function (rack, row) {
   if(is.null(param)){
     cpp=read.table(CELLPOSE_PARAM,header=T,row.names = 1) 
     ##Let's zoom in on just a subset of entries of cpp, based on the "cellLine" param
-    mydb = connect2DB()
-    stmt = paste0("select id, cellLine from Passaging where id in (\'",paste(setdiff(rownames(cpp),"default"),collapse = "', '"),"\') ")
-    rs = dbSendQuery(mydb, stmt)
-    cli = fetch(rs, n=-1)
-    dbClearResult(dbListResults(mydb)[[1]])
-    dbDisconnect(mydb)
+    stmt = paste0("select id, cellLine from Passaging where id in ('",paste(setdiff(rownames(cpp),"default"),collapse = "', '"),"') ")
+    cli = .db_fetch(stmt)
     cli=rbind(cli,c("default","default"))
     rownames(cli)=cli$id
     cpp$cellLine=cli[rownames(cpp),"cellLine"]
