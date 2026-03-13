@@ -620,7 +620,7 @@ plotLiquidNitrogenBox <- function (rack, row) {
   CELLSEGMENTATIONS_INDIR  = .cellseg$input
   # QUPATH_PRJ = "~/Downloads/qproject/project.qpproj"
   # QSCRIPT = "~/Downloads/qpscript/runDetectionROI.groovy"
-  CELLPOSE_PARAM=paste0(find.package("cloneid"),filesep,"python/cellPoseSAM.param")
+  CELLPOSE_PARAM=paste0(find.package("cloneid"),filesep,"python/cellPose.param")
   PYTHON_SCRIPTS=list.files(paste0(find.package("cloneid"),filesep,"python"), pattern=".py", full.names = T)
   CELLPOSE_SCRIPT=grep("GetCount_cellPose.py",PYTHON_SCRIPTS, value = T)
   PREPROCESS_SCRIPT=grep("preprocessing.py",PYTHON_SCRIPTS, value = T)
