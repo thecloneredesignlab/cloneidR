@@ -1,4 +1,22 @@
-seed <- function(id, from, cellCount, flask, tx = Sys.time(), media=NULL, excludeOption=F, preprocessing=T, param=NULL){ 
+# Internal helpers: generic DB fetch and exec.
+# conn=NULL (default): open a fresh connection per call — conservative, matches existing
+# package per-function lifecycle. Session-level reuse is deferred (pass conn= if needed).
+.db_fetch <- function(stmt, conn = NULL) {
+  if (is.null(conn)) conn <- connect2DB()
+  rs <- dbSendQuery(conn, stmt)
+  df <- fetch(rs, n = -1)
+  dbClearResult(rs)
+  df
+}
+.db_exec <- function(stmt, conn = NULL) {
+  if (is.null(conn)) conn <- connect2DB()
+  rs <- dbSendQuery(conn, stmt)
+  dbClearResult(rs)
+  invisible(NULL)
+}
+
+
+seed <- function(id, from, cellCount, flask, tx = Sys.time(), media=NULL, excludeOption=F, preprocessing=T, param=NULL){
   x=.seed_or_harvest(event = "seeding", id=id, from = from, cellCount = cellCount, tx = tx, flask = flask, media = media, excludeOption=excludeOption, preprocessing=preprocessing, param=param)
   return(x)
 }
