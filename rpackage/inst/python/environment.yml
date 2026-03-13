@@ -1,29 +1,26 @@
 name: cellpose
 channels:
   - conda-forge
-  - pytorch     # Add this channel for PyTorch
   - defaults
 dependencies:
   - python=3.10
-  - numpy<2
-  - scipy
-  - opencv=4.7
+  - opencv
   - pip
   - imagecodecs
-  - numba>=0.55
-  - pandas
-  - pillow
-  - python-dateutil
-  - pytz
-  - setuptools
-  - six
-  - tifffile
-  - tqdm
-  - typing-extensions
-  - pytorch>=1.10   # Use conda installation from the pytorch channel
   - pip:
     - cellpose==2.1.0
     - fastremap
-    - easyocr
     - llvmlite
     - natsort
+    - numba>0.5
+    - pandas
+    - pillow
+    - python-dateutil
+    - pytz
+    - scipy
+    - setuptools
+    - six
+    - tifffile
+    - torch>1.1
+    - tqdm
+    - typing-extensions
