@@ -16,22 +16,30 @@
 }
 
 
-seed <- function(id, from, cellCount, flask, tx = Sys.time(), media=NULL, excludeOption=F, preprocessing=T, param=NULL){
-  x=.seed_or_harvest(event = "seeding", id=id, from = from, cellCount = cellCount, tx = tx, flask = flask, media = media, excludeOption=excludeOption, preprocessing=preprocessing, param=param)
+seed <- function(id, from, cellCount, flask, tx = Sys.time(), media=NULL, excludeOption=F, preprocessing=T, param=NULL,
+                 message_fn=NULL, input_fn=NULL){
+  x=.seed_or_harvest(event = "seeding", id=id, from = from, cellCount = cellCount, tx = tx, flask = flask, media = media, excludeOption=excludeOption, preprocessing=preprocessing, param=param,
+                     message_fn=message_fn, input_fn=input_fn)
   return(x)
 }
 
-harvest <- function(id, from, cellCount, tx = Sys.time(), media=NULL, excludeOption=F, preprocessing=T, param=NULL){
-  x=.seed_or_harvest(event = "harvest", id=id, from=from, cellCount = cellCount, tx = tx, flask = NULL, media = media, excludeOption=excludeOption, preprocessing=preprocessing, param=param)
+harvest <- function(id, from, cellCount, tx = Sys.time(), media=NULL, excludeOption=F, preprocessing=T, param=NULL,
+                    message_fn=NULL, input_fn=NULL){
+  x=.seed_or_harvest(event = "harvest", id=id, from=from, cellCount = cellCount, tx = tx, flask = NULL, media = media, excludeOption=excludeOption, preprocessing=preprocessing, param=param,
+                     message_fn=message_fn, input_fn=input_fn)
   return(x)
 }
 
-inject <- function(mouseID, from, cellCount, tx = Sys.time(), strain, injection_type=23){ 
-  x=.seed_or_harvest(event = "seeding", id=mouseID, from = from, cellCount = cellCount, tx = tx, flask = injection_type, media = strain, excludeOption=F, preprocessing=F, param=NULL,inject=injection_type)
+inject <- function(mouseID, from, cellCount, tx = Sys.time(), strain, injection_type=23,
+                   message_fn=NULL, input_fn=NULL){
+  x=.seed_or_harvest(event = "seeding", id=mouseID, from = from, cellCount = cellCount, tx = tx, flask = injection_type, media = strain, excludeOption=F, preprocessing=F, param=NULL, inject=injection_type,
+                     message_fn=message_fn, input_fn=input_fn)
 }
 
-resect <- function(id, from, weight_mg, size_cubicmm, tx = Sys.time(), as='harvest'){
-  x=.seed_or_harvest(event = as, id=id, from=from, cellCount = size_cubicmm, tx = tx, flask = 'NULL', media = NULL, excludeOption=F, preprocessing=F, param=NULL, resect=weight_mg)
+resect <- function(id, from, weight_mg, size_cubicmm, tx = Sys.time(), as='harvest',
+                   message_fn=NULL, input_fn=NULL){
+  x=.seed_or_harvest(event = as, id=id, from=from, cellCount = size_cubicmm, tx = tx, flask = 'NULL', media = NULL, excludeOption=F, preprocessing=F, param=NULL, resect=weight_mg,
+                     message_fn=message_fn, input_fn=input_fn)
   return(x)
 }
 
@@ -349,24 +357,35 @@ plotLiquidNitrogenBox <- function (rack, row) {
 }
 
 
-.seed_or_harvest <- function(event, id, from, cellCount, tx, flask, media, excludeOption, preprocessing=T, param=NULL, inject=NULL, resect=NULL, path2segmentationresults=NULL){
+.seed_or_harvest <- function(event, id, from, cellCount, tx, flask, media, excludeOption, preprocessing=T, param=NULL, inject=NULL, resect=NULL, path2segmentationresults=NULL,
+                             message_fn=NULL, input_fn=NULL){
   library(RMySQL)
   library(matlab)
+
+  # ---- Portal adapter functions (default: no-op / readline) ----
+  # message_fn(type, tag, value): portal logging; default is a no-op.
+  .msg <- if (is.null(message_fn)) function(...) invisible(NULL) else message_fn
+  # input_fn(inputOptions, prompt, retry_prompt, infomessage): user confirmation dialog.
+  # Must return the selected option STRING from inputOptions.
+  # Closed over by .wait_for_confirmation below (Option A: free variable from enclosing scope).
+  # ---- End adapter setup ---------------------------------------------------
+
   .wait_for_confirmation <- function(CHECKRESULT, timeout = 10, prompt_template = "Error encountered while updating database: %s. No changes were made to the database. Type yes to confirm: ") {
-    # Check if the result needs confirmation
-    confirmError <- "no"
-    start_time <- Sys.time()
-    
-    # Construct the prompt message
     prompt_message <- sprintf(prompt_template, CHECKRESULT)
-    
-    while (confirmError != "yes" && as.numeric(difftime(Sys.time(), start_time, units = "secs")) < timeout) {
-      Sys.sleep(0.5)  # Check every 0.5 seconds
-      # Simulate `readline` with non-blocking logic or use it as is
-      confirmError <- readline(prompt = prompt_message)
-    }
-    if (confirmError != "yes") {
-      stop("Operation timed out. No confirmation received.")
+    if (!is.null(input_fn)) {
+      # Portal context: delegate to injected input handler (input_fn from enclosing scope)
+      input_fn(c("yes"), prompt_message, prompt_message, CHECKRESULT)
+    } else {
+      # Interactive context: readline with timeout
+      confirmError <- "no"
+      start_time <- Sys.time()
+      while (confirmError != "yes" && as.numeric(difftime(Sys.time(), start_time, units = "secs")) < timeout) {
+        Sys.sleep(0.5)
+        confirmError <- readline(prompt = prompt_message)
+      }
+      if (confirmError != "yes") {
+        stop("Operation timed out. No confirmation received.")
+      }
     }
   }
   
