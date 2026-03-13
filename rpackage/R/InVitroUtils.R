@@ -576,20 +576,49 @@ plotLiquidNitrogenBox <- function (rack, row) {
   sapply(out, function(digits) if(length(digits)) paste0(digits, collapse="") else NA)
 }
 
+# ---- Per-id artifact removal from global INDIR/OUTDIR -----------------------
+# Deletes all files in global INDIR matching {id}_[0-9]+x_ph*.tif and all
+# files in each of the five OUTDIR subfolders matching ^{id}_. Does NOT delete
+# directories. Safe to call when stores are empty (no-op). Called by the portal's
+# IVU.R caller via cloneid:::.remove_id_artifacts() for compensating rollback.
+.remove_id_artifacts <- function(id, indir, outdir) {
+  del_in <- list.files(indir, pattern = paste0("^", id, "_[0-9]+x_ph"), full.names = TRUE)
+  del_in <- grep("\\.tif$", del_in, value = TRUE, ignore.case = TRUE)
+  if (length(del_in) > 0) file.remove(del_in)
+  for (sub in c("DetectionResults", "Annotations", "Images", "Confluency", "Masks")) {
+    del_out <- list.files(file.path(outdir, sub),
+                          pattern = paste0("^", id, "_"), full.names = TRUE)
+    if (length(del_out) > 0) file.remove(del_out)
+  }
+  invisible(NULL)
+}
+
+# Returns the canonical cell-segmentation paths from the package config.
+# Single parse point: both InVitroUtils.R and IVU.R use this helper
+# (IVU via cloneid:::.cellseg_paths()) so the YAML is never read in two places.
+.cellseg_paths <- function() {
+  yml <- yaml::read_yaml(paste0(system.file(package = 'cloneid'), '/config/config.yaml'))
+  list(
+    input  = paste0(normalizePath(yml$cellSegmentation$input),  "/"),
+    output = paste0(normalizePath(yml$cellSegmentation$output), "/"),
+    tmp    = normalizePath(yml$cellSegmentation$tmp)
+  )
+}
+
 .readCellSegmentationsOutput <- function(id, from, cellLine, dishSurfaceArea_cm2, cellCount, excludeOption, preprocessing=T, param=NULL){
-  ## Typical values for dishSurfaceArea_cm2 are: 
-  ## a) 75 cm^2 = 10.1 cm x 7.30 cm  
+  ## Typical values for dishSurfaceArea_cm2 are:
+  ## a) 75 cm^2 = 10.1 cm x 7.30 cm
   ## b) 25 cm^2 = 5.08 cm x 5.08 cm
   ## c) well from 96-plate = 0.32 cm^2
   ## CellSegmentations Settings; @TODO: should be set under settings, not here
   UM2CM = 1e-4
-  yml = yaml::read_yaml(paste0(system.file(package='cloneid'), '/config/config.yaml'))
-  TMP_DIR = normalizePath(yml$cellSegmentation$tmp);
+  .cellseg <- .cellseg_paths()
+  TMP_DIR = .cellseg$tmp
   unlink(TMP_DIR,recursive=T, force = T)
   TMP_DIR = paste0(TMP_DIR,filesep,id);
   unlink(TMP_DIR,recursive=T, force = T)
-  CELLSEGMENTATIONS_OUTDIR=paste0(normalizePath(yml$cellSegmentation$output),"/");
-  CELLSEGMENTATIONS_INDIR=paste0(normalizePath(yml$cellSegmentation$input),"/");
+  CELLSEGMENTATIONS_OUTDIR = .cellseg$output
+  CELLSEGMENTATIONS_INDIR  = .cellseg$input
   # QUPATH_PRJ = "~/Downloads/qproject/project.qpproj"
   # QSCRIPT = "~/Downloads/qpscript/runDetectionROI.groovy"
   CELLPOSE_PARAM=paste0(find.package("cloneid"),filesep,"python/cellPoseSAM.param")
@@ -599,9 +628,10 @@ plotLiquidNitrogenBox <- function (rack, row) {
   TISSUESEG_SCRIPT=grep("tissue_seg.py",PYTHON_SCRIPTS, value = T)
   QCSTATS_SCRIPT=grep("QC_Statistics.py",PYTHON_SCRIPTS, value = T)
   suppressWarnings(dir.create(paste0(CELLSEGMENTATIONS_OUTDIR,"DetectionResults")))
-  suppressWarnings(dir.create(paste0(CELLSEGMENTATIONS_OUTDIR,"Annotations"))) 
-  suppressWarnings(dir.create(paste0(CELLSEGMENTATIONS_OUTDIR,"Images"))); 
-  suppressWarnings(dir.create(paste0(CELLSEGMENTATIONS_OUTDIR,"Confluency"))); 
+  suppressWarnings(dir.create(paste0(CELLSEGMENTATIONS_OUTDIR,"Annotations")))
+  suppressWarnings(dir.create(paste0(CELLSEGMENTATIONS_OUTDIR,"Images")))
+  suppressWarnings(dir.create(paste0(CELLSEGMENTATIONS_OUTDIR,"Confluency")))
+  suppressWarnings(dir.create(paste0(CELLSEGMENTATIONS_OUTDIR,"Masks"))) 
   # suppressWarnings(dir.create("~/Downloads/qpscript"))
   # suppressWarnings(dir.create(fileparts(QUPATH_PRJ)$pathstr))
   # qpversion = list.files("/Applications", pattern = "QuPath")
@@ -624,9 +654,9 @@ plotLiquidNitrogenBox <- function (rack, row) {
   f_i = grep("x_ph_",f_i,value=T)
   f_i = grep(".tif$",f_i,value=T)
   file.copy(f_i, TMP_DIR)
-  ## Delete output files from prior runs:
-  for(subfolder in c("Annotations","Images","DetectionResults","Confluency")){
-    f = list.files(paste0(CELLSEGMENTATIONS_OUTDIR,subfolder), pattern = paste0(id,"_"), full.names = T)
+  ## Delete output files from prior runs (anchored per-id pattern; all 5 subfolders):
+  for(subfolder in c("Annotations","Images","DetectionResults","Confluency","Masks")){
+    f = list.files(paste0(CELLSEGMENTATIONS_OUTDIR,subfolder), pattern = paste0("^",id,"_"), full.names = T)
     f = grep("x_ph_",f,value=T)
     file.remove(f)
   }
