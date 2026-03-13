@@ -835,52 +835,34 @@ plotLiquidNitrogenBox <- function (rack, row) {
 
 
 .move_temp_files <- function(TMP_DIR, segmentationRegex="overlay.", moveSegmentationInputToo=F) {
-  yml = yaml::read_yaml(paste0(system.file(package='cloneid'), '/config/config.yaml'))
-  CELLSEGMENTATIONS_OUTDIR=paste0(normalizePath(yml$cellSegmentation$output),"/");
-  CELLSEGMENTATIONS_INDIR=paste0(normalizePath(yml$cellSegmentation$input),"/");
-  
+  .cellseg <- .cellseg_paths()
+  CELLSEGMENTATIONS_OUTDIR <- .cellseg$output
+  CELLSEGMENTATIONS_INDIR  <- .cellseg$input
+
   cellPoseOut_img <- list.files(TMP_DIR, recursive = TRUE, pattern = segmentationRegex, full.names = TRUE)
-  cellPoseIn_img = gsub(segmentationRegex,'.',cellPoseOut_img,fixed = T)
-  N = length(cellPoseIn_img)
-  
+  cellPoseIn_img  <- gsub(segmentationRegex, '.', cellPoseOut_img, fixed = TRUE)
+  N <- length(cellPoseIn_img)
+
   ## Move files from TMP_DIR to destination directories
   cellPoseOut_csv <- list.files(TMP_DIR, recursive = TRUE, pattern = ".csv", full.names = TRUE)
-  # Move specific CSV files to respective directories
-  f=grep("pred", cellPoseOut_csv, value = TRUE)
-  f_a=grep("cellpose_count", cellPoseOut_csv, value = TRUE)
-  f_c=grep("Confluency", cellPoseOut_csv, value = TRUE)
-  f_m=list.files(TMP_DIR, recursive = F, pattern = "mask", full.names = TRUE)
+  f   <- grep("pred",          cellPoseOut_csv, value = TRUE)
+  f_a <- grep("cellpose_count",cellPoseOut_csv, value = TRUE)
+  f_c <- grep("Confluency",    cellPoseOut_csv, value = TRUE)
+  f_m <- list.files(TMP_DIR, recursive = TRUE, pattern = "mask", full.names = TRUE)
+  cellPoseMsk  <- grep("_cp_masks\\.png$", f_m, value = TRUE)
+  tissueSegMsk <- grep("_cp_masks\\.png$", f_m, value = TRUE, invert = TRUE)
   if(length(f)!=N || length(f_a)!=N || length(f_c)!=N || length(f_m)!=N){
     warning("No results were kept because unexpected number of output files were detected. Likely an error was encountered while processing at least one image.")
     return()
   }
-  
-  sapply(f, function(x) 
-    file.copy(x, paste0(CELLSEGMENTATIONS_OUTDIR, "DetectionResults"))
-  )
-  
-  sapply(f_a, function(x) 
-    file.copy(x, paste0(CELLSEGMENTATIONS_OUTDIR, "Annotations"))
-  )
-  
-  sapply(f_c, function(x) 
-    file.copy(x, paste0(CELLSEGMENTATIONS_OUTDIR, "Confluency"))
-  )
-  
-  sapply(f_m, function(x) 
-    file.copy(x, paste0(CELLSEGMENTATIONS_OUTDIR, "Masks"))
-  )
-  
-  # Move image files to respective directories
-  tissuesegOut_img <- list.files(TMP_DIR, recursive = TRUE, pattern = "mask.", full.names = TRUE)
-  sapply(cellPoseOut_img, function(x) 
-    file.copy(x, paste0(CELLSEGMENTATIONS_OUTDIR, "Images"))
-  )
-  sapply(tissuesegOut_img, function(x) 
-    file.copy(x, paste0(CELLSEGMENTATIONS_OUTDIR, "Confluency"))
-  )
-  
-  # Also move input
+
+  sapply(f,            function(x) file.copy(x, paste0(CELLSEGMENTATIONS_OUTDIR, "DetectionResults")))
+  sapply(f_a,          function(x) file.copy(x, paste0(CELLSEGMENTATIONS_OUTDIR, "Annotations")))
+  sapply(f_c,          function(x) file.copy(x, paste0(CELLSEGMENTATIONS_OUTDIR, "Confluency")))
+  sapply(cellPoseMsk,  function(x) file.copy(x, paste0(CELLSEGMENTATIONS_OUTDIR, "Masks")))
+  sapply(tissueSegMsk, function(x) file.copy(x, paste0(CELLSEGMENTATIONS_OUTDIR, "Confluency")))
+  sapply(cellPoseOut_img, function(x) file.copy(x, paste0(CELLSEGMENTATIONS_OUTDIR, "Images")))
+
   if(moveSegmentationInputToo){
     sapply(cellPoseIn_img, function(x) file.copy(x, CELLSEGMENTATIONS_INDIR))
   }
@@ -888,34 +870,28 @@ plotLiquidNitrogenBox <- function (rack, row) {
 
 
 .wait_for_analysis_output <- function(id, howMany) {
-  yml = yaml::read_yaml(paste0(system.file(package='cloneid'), '/config/config.yaml'))
-  CELLSEGMENTATIONS_OUTDIR=paste0(normalizePath(yml$cellSegmentation$output),"/");
-  
+  CELLSEGMENTATIONS_OUTDIR <- .cellseg_paths()$output
+
   ## Wait and look for imaging analysis output
-  message <- paste0("Waiting for ", id, " to appear under ", CELLSEGMENTATIONS_OUTDIR, " ...")
-  print(message, quote = FALSE)
+  print(paste0("Waiting for ", id, " to appear under ", CELLSEGMENTATIONS_OUTDIR, " ..."), quote = FALSE)
   f_o <- c()
   start_time <- Sys.time()
   timeout <- 120  # 2 minutes in seconds
   while (length(f_o) < howMany && as.numeric(difftime(Sys.time(), start_time, units = "secs")) < timeout) {
     Sys.sleep(3)
     f_o <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "Images"), pattern = paste0("^",id, "_"), full.names = TRUE)
-    # f <- grep("x_ph_", f, value = TRUE)
   }
-  
+
   if (length(f_o) < howMany) {
     warning("Timed out waiting for analysis output.")
     return()
   }
-  
-  f <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "DetectionResults"), pattern = paste0("^",id, "_"), full.names = TRUE)
-  f_a <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "Annotations"), pattern = paste0("^",id, "_"), full.names = TRUE)
-  # f_o <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "Images"), pattern = paste0("^",id, "_"), full.names = TRUE)
-  f_c <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "Confluency"), pattern = paste0("^",id, "_"), full.names = TRUE)
+
+  f   <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "DetectionResults"), pattern = paste0("^",id, "_"), full.names = TRUE)
+  f_a <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "Annotations"),      pattern = paste0("^",id, "_"), full.names = TRUE)
+  f_c <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "Confluency"),        pattern = paste0("^",id, "_"), full.names = TRUE)
   f_c <- grep(".csv", f_c, value = TRUE)
-  output_message <- paste0("Output found for ", fileparts(f_o[1])$name, " and ", (length(f_o) - 1), " other image files.")
-  print(output_message, quote = FALSE)
-  # Return the file paths as a list for further processing if needed
+  print(paste0("Output found for ", fileparts(f_o[1])$name, " and ", (length(f_o) - 1), " other image files."), quote = FALSE)
   return(list(f = f, f_a = f_a, f_o = f_o, f_c = f_c))
 }
 
