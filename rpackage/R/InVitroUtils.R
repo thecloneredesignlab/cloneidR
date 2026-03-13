@@ -896,9 +896,9 @@ plotLiquidNitrogenBox <- function (rack, row) {
 }
 
 getMRIdata<-function(id, signal="t2"){
-  yml = yaml::read_yaml(paste0(system.file(package='cloneid'), '/config/config.yaml'))
-  CELLSEGMENTATIONS_OUTDIR=paste0(normalizePath(yml$cellSegmentation$output),"/");
-  CELLSEGMENTATIONS_INDIR=paste0(normalizePath(yml$cellSegmentation$input),"/");
+  .cellseg <- .cellseg_paths()
+  CELLSEGMENTATIONS_OUTDIR <- .cellseg$output
+  CELLSEGMENTATIONS_INDIR  <- .cellseg$input
   x=list.files(paste0(CELLSEGMENTATIONS_OUTDIR,"/Images"), pattern=paste0("^",id,"_",signal), full.names = T)[1]
   nii_mask=RNifti::readNifti(x)
   signal=gsub("_cavity","",signal)
