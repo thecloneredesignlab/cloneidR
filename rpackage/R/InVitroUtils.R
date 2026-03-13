@@ -16,16 +16,16 @@
 }
 
 
-seed <- function(id, from, cellCount, flask, tx = Sys.time(), media=NULL, excludeOption=F, preprocessing=T, param=NULL,
+seed <- function(id, from, cellCount, flask, tx = Sys.time(), media=NULL, excludeOption=F, preprocessing=T, param=NULL, transactionId=0,
                  message_fn=NULL, input_fn=NULL){
-  x=.seed_or_harvest(event = "seeding", id=id, from = from, cellCount = cellCount, tx = tx, flask = flask, media = media, excludeOption=excludeOption, preprocessing=preprocessing, param=param,
+  x=.seed_or_harvest(event = "seeding", id=id, from = from, cellCount = cellCount, tx = tx, flask = flask, media = media, excludeOption=excludeOption, preprocessing=preprocessing, param=param, transactionId=transactionId,
                      message_fn=message_fn, input_fn=input_fn)
   return(x)
 }
 
-harvest <- function(id, from, cellCount, tx = Sys.time(), media=NULL, excludeOption=F, preprocessing=T, param=NULL,
+harvest <- function(id, from, cellCount, tx = Sys.time(), media=NULL, excludeOption=F, preprocessing=T, param=NULL, transactionId=0,
                     message_fn=NULL, input_fn=NULL){
-  x=.seed_or_harvest(event = "harvest", id=id, from=from, cellCount = cellCount, tx = tx, flask = NULL, media = media, excludeOption=excludeOption, preprocessing=preprocessing, param=param,
+  x=.seed_or_harvest(event = "harvest", id=id, from=from, cellCount = cellCount, tx = tx, flask = NULL, media = media, excludeOption=excludeOption, preprocessing=preprocessing, param=param, transactionId=transactionId,
                      message_fn=message_fn, input_fn=input_fn)
   return(x)
 }
@@ -357,7 +357,7 @@ plotLiquidNitrogenBox <- function (rack, row) {
 }
 
 
-.seed_or_harvest <- function(event, id, from, cellCount, tx, flask, media, excludeOption, preprocessing=T, param=NULL, inject=NULL, resect=NULL, path2segmentationresults=NULL,
+.seed_or_harvest <- function(event, id, from, cellCount, tx, flask, media, excludeOption, preprocessing=T, param=NULL, inject=NULL, resect=NULL, path2segmentationresults=NULL, transactionId=0,
                              message_fn=NULL, input_fn=NULL){
   library(RMySQL)
   library(matlab)
@@ -471,8 +471,13 @@ plotLiquidNitrogenBox <- function (rack, row) {
   passaging = passaging[!is.na(passaging$passage_id),]
   # x=data.table::transpose(as.data.frame(c(id , event, from, dish$dishCount, passage)))
   # colnames(x) = c("id", "event", "passaged_from_id1", "correctedCount", "passage")
-  x=data.table::transpose(as.data.frame(c(id ,parent$cellLine,from,event,as.character(tx),dish$dishCount,dish$dishCount,dish$cellSize, dish$dishAreaOccupied, passage,flask,parent$media,  user,  user)))
-  colnames(x) = c("id", "cellLine","passaged_from_id1", "event", "date", "cellCount","correctedCount","cellSize_um2","areaOccupied_um2", "passage", "flask", "media", "owner", "lastModified")
+  if(transactionId == 0){
+    x=data.table::transpose(as.data.frame(c(id ,parent$cellLine,from,event,as.character(tx),dish$dishCount,dish$dishCount,dish$cellSize, dish$dishAreaOccupied, passage,flask,parent$media,  user,  user)))
+    colnames(x) = c("id", "cellLine","passaged_from_id1", "event", "date", "cellCount","correctedCount","cellSize_um2","areaOccupied_um2", "passage", "flask", "media", "owner", "lastModified")
+  }else{
+    x=data.table::transpose(as.data.frame(c(id ,parent$cellLine,from,event,as.character(tx),dish$dishCount,dish$dishCount,dish$cellSize, dish$dishAreaOccupied, passage,flask,parent$media,  user,  user, transactionId)))
+    colnames(x) = c("id", "cellLine","passaged_from_id1", "event", "date", "cellCount","correctedCount","cellSize_um2","areaOccupied_um2", "passage", "flask", "media", "owner", "lastModified", "transactionId")
+  }
   rownames(x) <- x$id
   x4DB <- x
   x$passage_id <- .unique_passage_id(x$id)
