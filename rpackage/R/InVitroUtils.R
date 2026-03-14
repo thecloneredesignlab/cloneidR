@@ -608,17 +608,18 @@ plotLiquidNitrogenBox <- function (rack, row) {
 }
 
 # ---- Per-id artifact removal from global INDIR/OUTDIR -----------------------
-# Deletes all files in global INDIR matching {id}_[0-9]+x_ph*.tif and all
+# Deletes all files in global INDIR/OUTDIR matching the unified ingest regex
+# ^{id}_([0-9]+x_ph|t1|t2|flair|pd) (covers microscopy TIFs and MRI NIfTIs) and all
 # files in each of the five OUTDIR subfolders matching ^{id}_. Does NOT delete
 # directories. Safe to call when stores are empty (no-op). Called by the portal's
 # IVU.R caller via cloneid:::.remove_id_artifacts() for compensating rollback.
 .remove_id_artifacts <- function(id, indir, outdir) {
-  del_in <- list.files(indir, pattern = paste0("^", id, "_[0-9]+x_ph"), full.names = TRUE)
+  del_in <- list.files(indir, pattern = paste0("^", id, "_([0-9]+x_ph|t1|t2|flair|pd)"), full.names = TRUE)
   del_in <- grep("\\.tif$", del_in, value = TRUE, ignore.case = TRUE)
   if (length(del_in) > 0) file.remove(del_in)
   for (sub in c("DetectionResults", "Annotations", "Images", "Confluency", "Masks")) {
     del_out <- list.files(file.path(outdir, sub),
-                          pattern = paste0("^", id, "_[0-9]+x_ph"), full.names = TRUE)
+                          pattern = paste0("^", id, "_([0-9]+x_ph|t1|t2|flair|pd)"), full.names = TRUE)
     if (length(del_out) > 0) file.remove(del_out)
   }
   invisible(NULL)
@@ -687,7 +688,7 @@ plotLiquidNitrogenBox <- function (rack, row) {
   file.copy(f_i, TMP_DIR)
   ## Delete output files from prior runs (anchored per-id pattern; all 5 subfolders):
   for(subfolder in c("Annotations","Images","DetectionResults","Confluency","Masks")){
-    f = list.files(paste0(CELLSEGMENTATIONS_OUTDIR,subfolder), pattern = paste0("^",id,"_[0-9]+x_ph"), full.names = T)
+    f = list.files(paste0(CELLSEGMENTATIONS_OUTDIR,subfolder), pattern = paste0("^",id,"_([0-9]+x_ph|t1|t2|flair|pd)"), full.names = T)
     file.remove(f)
   }
   ## Input files should never be deleted. What goes into `CELLSEGMENTATIONS_OUTDIR` stays in CELLSEGMENTATIONS_OUTDIR. This will ensure that raw data is never deleted in case any analysis needs to be redone
@@ -847,21 +848,43 @@ plotLiquidNitrogenBox <- function (rack, row) {
 }
 
 
+# MRI-specific file promotion: copies raw input → global INDIR, mask + optional
+# cavity → global OUTDIR/Images. No CSV/PNG parity checks (MRI has none).
+# All deposited filenames match the unified ingest regex so .remove_id_artifacts
+# handles compensating rollback correctly.
+.move_mri_files <- function(TMP_DIR, id) {
+  .cellseg <- .cellseg_paths()
+  mri_regex <- paste0("^", id, "_(t1|t2|flair|pd)")
+  msk <- list.files(TMP_DIR, pattern = paste0(mri_regex, ".*_msk\\.nii"),  full.names = TRUE)
+  cav <- list.files(TMP_DIR, pattern = paste0(mri_regex, ".*_cavity\\.nii"), full.names = TRUE)
+  raw <- list.files(TMP_DIR, pattern = paste0(mri_regex, "\\.nii"),          full.names = TRUE)
+  # raw must not match mask or cavity files
+  raw <- raw[!grepl("_msk\\.nii|_cavity\\.nii", raw)]
+  if (length(msk) != 1)
+    stop(paste0("Expected exactly 1 mask NIfTI for id ", id, "; found ", length(msk)))
+  if (length(raw) != 1)
+    stop(paste0("Expected exactly 1 raw NIfTI for id ", id, "; found ", length(raw)))
+  file.copy(raw[1], .cellseg$input)
+  file.copy(msk[1], paste0(.cellseg$output, "Images/"))
+  if (length(cav) == 1)
+    file.copy(cav[1], paste0(.cellseg$output, "Images/"))
+}
+
 .readMRISegmentationsOutput <- function(id, path2segmentationresults) {
-  ## Currently here we deal with MRI images exclusively:
-  f_i = list.files(path2segmentationresults, pattern = paste0("^",id,"_"), full.names = T)
-  if(length(f_i)!=length(list.files(path2segmentationresults))){
-    errorCondition(paste0("All files in input folder (",path2segmentationresults,") must begin with ",id))
-    stop()
-  }
-  .move_temp_files(path2segmentationresults, segmentationRegex="_msk.", moveSegmentationInputToo=T) 
-  .move_temp_files(path2segmentationresults, segmentationRegex="_cavity", moveSegmentationInputToo=F)  
-  ia=.wait_for_analysis_output(id, 2)
-  nii=RNifti::readNifti(ia$f_o[1])
-  ## Compute volume from masks
-  volume = sum(as.numeric(nii))
-  dish =list(dishCount="NULL", cellSize=volume, dishAreaOccupied="NULL")
-  return(dish)
+  ingest_regex <- paste0("^", id, "_([0-9]+x_ph|t1|t2|flair|pd)")
+  f_i <- list.files(path2segmentationresults, pattern = ingest_regex, full.names = TRUE)
+  if (length(f_i) != length(list.files(path2segmentationresults)))
+    stop(paste0("All files in (", path2segmentationresults,
+                ") must match ingest regex for id: ", id))
+  .move_mri_files(path2segmentationresults, id)
+  msk_promoted <- list.files(paste0(.cellseg_paths()$output, "Images/"),
+                              pattern = paste0("^", id, "_(t1|t2|flair|pd).*_msk\\.nii"),
+                              full.names = TRUE)
+  if (length(msk_promoted) == 0)
+    stop(paste0("Mask not found in OUTDIR/Images after promotion for id: ", id))
+  nii    <- RNifti::readNifti(msk_promoted[1])
+  volume <- sum(as.numeric(nii))
+  return(list(dishCount = "NULL", cellSize = volume, dishAreaOccupied = "NULL"))
 }
 
 
@@ -912,7 +935,7 @@ plotLiquidNitrogenBox <- function (rack, row) {
   timeout <- 120  # 2 minutes in seconds
   while (length(f_o) < howMany && as.numeric(difftime(Sys.time(), start_time, units = "secs")) < timeout) {
     Sys.sleep(3)
-    f_o <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "Images"), pattern = paste0("^",id, "_[0-9]+x_ph"), full.names = TRUE)
+    f_o <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "Images"), pattern = paste0("^",id, "_([0-9]+x_ph|t1|t2|flair|pd)"), full.names = TRUE)
   }
 
   if (length(f_o) < howMany) {
@@ -920,9 +943,9 @@ plotLiquidNitrogenBox <- function (rack, row) {
     return()
   }
 
-  f   <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "DetectionResults"), pattern = paste0("^",id, "_[0-9]+x_ph"), full.names = TRUE)
-  f_a <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "Annotations"),      pattern = paste0("^",id, "_[0-9]+x_ph"), full.names = TRUE)
-  f_c <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "Confluency"),        pattern = paste0("^",id, "_[0-9]+x_ph"), full.names = TRUE)
+  f   <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "DetectionResults"), pattern = paste0("^",id, "_([0-9]+x_ph|t1|t2|flair|pd)"), full.names = TRUE)
+  f_a <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "Annotations"),      pattern = paste0("^",id, "_([0-9]+x_ph|t1|t2|flair|pd)"), full.names = TRUE)
+  f_c <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "Confluency"),        pattern = paste0("^",id, "_([0-9]+x_ph|t1|t2|flair|pd)"), full.names = TRUE)
   f_c <- grep(".csv", f_c, value = TRUE)
   print(paste0("Output found for ", fileparts(f_o[1])$name, " and ", (length(f_o) - 1), " other image files."), quote = FALSE)
   return(list(f = f, f_a = f_a, f_o = f_o, f_c = f_c))
