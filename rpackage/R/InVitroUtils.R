@@ -33,36 +33,51 @@ harvest <- function(id, from, cellCount, tx = Sys.time(), media=NULL, excludeOpt
 }
 
 inject <- function(mouseID, from, cellCount, tx = Sys.time(), strain, injection_type=23,
-                   message_fn=NULL, input_fn=NULL){
+                   message_fn=NULL, input_fn=NULL, transactionId=0){
   functionName <- as.character(match.call()[[1]])
   x=.seed_or_harvest(event = "seeding", id=mouseID, from = from, cellCount = cellCount, tx = tx, flask = injection_type, media = strain, excludeOption=F, preprocessing=F, param=NULL, inject=injection_type,
-                     message_fn=message_fn, input_fn=input_fn)
+                     message_fn=message_fn, input_fn=input_fn, transactionId=transactionId)
 }
 
 resect <- function(id, from, weight_mg, size_cubicmm, tx = Sys.time(), as='harvest',
-                   message_fn=NULL, input_fn=NULL){
+                   message_fn=NULL, input_fn=NULL, transactionId=0){
   functionName <- as.character(match.call()[[1]])
   x=.seed_or_harvest(event = as, id=id, from=from, cellCount = size_cubicmm, tx = tx, flask = 'NULL', media = NULL, excludeOption=F, preprocessing=F, param=NULL, resect=weight_mg,
-                     message_fn=message_fn, input_fn=input_fn)
+                     message_fn=message_fn, input_fn=input_fn, transactionId=transactionId)
   return(x)
 }
 
-diagnose <- function(event_id, patientID, path2segmentationresults, treatment=135, tx = Sys.time()){ 
-  init(event_id, patientID, flask=23, media = treatment,preprocessing = F, as='seeding', path2segmentationresults=path2segmentationresults, cellCount=NULL, tx=tx)
+diagnose <- function(event_id, patientID, path2segmentationresults, treatment=135, tx = Sys.time(),
+                     message_fn=NULL, input_fn=NULL, transactionId=0){
+  init(event_id, patientID, flask=23, media = treatment, preprocessing = F, as='seeding',
+       path2segmentationresults=path2segmentationresults, cellCount=NULL, tx=tx,
+       message_fn=message_fn, input_fn=input_fn, transactionId=transactionId)
 }
 
-follow_up <- function(event_id, diagnosis_id, treatment, path2segmentationresults, tx = Sys.time()){ 
-  x=.seed_or_harvest(event = "harvest", id=event_id, from=diagnosis_id, cellCount = NULL, tx = tx, flask = NULL, media = treatment, preprocessing=F, param=NULL, path2segmentationresults=path2segmentationresults)
+follow_up <- function(event_id, diagnosis_id, treatment, path2segmentationresults, tx = Sys.time(),
+                      message_fn=NULL, input_fn=NULL, transactionId=0){
+  x=.seed_or_harvest(event = "harvest", id=event_id, from=diagnosis_id, cellCount = NULL, tx = tx, flask = NULL, media = treatment, preprocessing=F, param=NULL, path2segmentationresults=path2segmentationresults,
+                     message_fn=message_fn, input_fn=input_fn, transactionId=transactionId)
   return(x)
 }
 
-init <- function(id, cellLine, cellCount, tx = Sys.time(), media=NULL, flask=NULL, preprocessing=T, as='harvest', path2segmentationresults=NULL){
+init <- function(id, cellLine, cellCount, tx = Sys.time(), media=NULL, flask=NULL, preprocessing=T, as='harvest', path2segmentationresults=NULL,
+                 message_fn=NULL, input_fn=NULL, transactionId=0){
+
+  # Portal adapter closure — same pattern as .seed_or_harvest
+  .msg <- if (is.null(message_fn)) function(...) invisible(NULL) else message_fn
+
   mydb = connect2DB()
 
   dish = list(dishCount=cellCount, cellSize="NULL", dishAreaOccupied="NULL")
   if (!is.null(path2segmentationresults)){
     ## Currently here we deal with MRI images exclusively:
-    dish = .readMRISegmentationsOutput(id, path2segmentationresults)
+    dish = try(.readMRISegmentationsOutput(id, path2segmentationresults))
+    if (inherits(dish, "try-error")) {
+      .msg("error", "MRISegmentation", conditionMessage(attr(dish, "condition")))
+      dbDisconnect(mydb)
+      if (is.null(message_fn)) stop(dish) else return(invisible(NULL))
+    }
   }else if(!is.null(flask)){
     dishSurfaceArea_cm2 = .readDishSurfaceArea_cm2(flask, mydb)
     dish = .readCellSegmentationsOutput(id= id, from=cellLine, cellLine = cellLine, dishSurfaceArea_cm2 = dishSurfaceArea_cm2, cellCount = cellCount, preprocessing=preprocessing)
@@ -76,11 +91,28 @@ init <- function(id, cellLine, cellCount, tx = Sys.time(), media=NULL, flask=NUL
 
   user = suppressWarnings(.db_fetch("SELECT user()", conn = mydb))[,1]
 
-  stmt = paste0("INSERT INTO Passaging (id, cellLine, event, date, cellCount, cellSize_um2, areaOccupied_um2, passage, flask, media, owner, lastModified) ",
-                "VALUES ('",id ,"', '",cellLine,"', '",as,"', '",as.character(tx),"', ",dish$dishCount,", ", dish$cellSize,", ", dish$dishAreaOccupied,", ", 1,", ",flask,", ", media, ", '", user, "', '", user, "');")
+  if (transactionId == 0) {
+    stmt = paste0("INSERT INTO Passaging ",
+                  "(id, cellLine, event, date, cellCount, cellSize_um2, areaOccupied_um2, ",
+                  "passage, flask, media, owner, lastModified) ",
+                  "VALUES ('",id ,"', '",cellLine,"', '",as,"', '",as.character(tx),"', ",
+                  dish$dishCount,", ", dish$cellSize,", ", dish$dishAreaOccupied,", ",
+                  1,", ",flask,", ", media, ", '", user, "', '", user, "');")
+  } else {
+    stmt = paste0("INSERT INTO Passaging ",
+                  "(id, cellLine, event, date, cellCount, cellSize_um2, areaOccupied_um2, ",
+                  "passage, flask, media, owner, lastModified, transactionId) ",
+                  "VALUES ('",id ,"', '",cellLine,"', '",as,"', '",as.character(tx),"', ",
+                  dish$dishCount,", ", dish$cellSize,", ", dish$dishAreaOccupied,", ",
+                  1,", ",flask,", ", media, ", '", user, "', '", user, "', ", transactionId, ");")
+  }
 
-  print(stmt)
-  .db_exec(stmt, conn = mydb)
+  rs = try(.db_exec(stmt, conn = mydb))
+  if (inherits(rs, "try-error")) {
+    .msg("error", "DBInsert", conditionMessage(attr(rs, "condition")))
+    dbDisconnect(mydb)
+    if (is.null(message_fn)) stop(rs) else return(invisible(NULL))
+  }
 
   dbDisconnect(mydb)
 }
