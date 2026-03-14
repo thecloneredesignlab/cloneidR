@@ -618,7 +618,7 @@ plotLiquidNitrogenBox <- function (rack, row) {
   if (length(del_in) > 0) file.remove(del_in)
   for (sub in c("DetectionResults", "Annotations", "Images", "Confluency", "Masks")) {
     del_out <- list.files(file.path(outdir, sub),
-                          pattern = paste0("^", id, "_"), full.names = TRUE)
+                          pattern = paste0("^", id, "_[0-9]+x_ph"), full.names = TRUE)
     if (length(del_out) > 0) file.remove(del_out)
   }
   invisible(NULL)
@@ -687,8 +687,7 @@ plotLiquidNitrogenBox <- function (rack, row) {
   file.copy(f_i, TMP_DIR)
   ## Delete output files from prior runs (anchored per-id pattern; all 5 subfolders):
   for(subfolder in c("Annotations","Images","DetectionResults","Confluency","Masks")){
-    f = list.files(paste0(CELLSEGMENTATIONS_OUTDIR,subfolder), pattern = paste0("^",id,"_"), full.names = T)
-    f = grep("x_ph_",f,value=T)
+    f = list.files(paste0(CELLSEGMENTATIONS_OUTDIR,subfolder), pattern = paste0("^",id,"_[0-9]+x_ph"), full.names = T)
     file.remove(f)
   }
   ## Input files should never be deleted. What goes into `CELLSEGMENTATIONS_OUTDIR` stays in CELLSEGMENTATIONS_OUTDIR. This will ensure that raw data is never deleted in case any analysis needs to be redone
@@ -913,7 +912,7 @@ plotLiquidNitrogenBox <- function (rack, row) {
   timeout <- 120  # 2 minutes in seconds
   while (length(f_o) < howMany && as.numeric(difftime(Sys.time(), start_time, units = "secs")) < timeout) {
     Sys.sleep(3)
-    f_o <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "Images"), pattern = paste0("^",id, "_"), full.names = TRUE)
+    f_o <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "Images"), pattern = paste0("^",id, "_[0-9]+x_ph"), full.names = TRUE)
   }
 
   if (length(f_o) < howMany) {
@@ -921,9 +920,9 @@ plotLiquidNitrogenBox <- function (rack, row) {
     return()
   }
 
-  f   <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "DetectionResults"), pattern = paste0("^",id, "_"), full.names = TRUE)
-  f_a <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "Annotations"),      pattern = paste0("^",id, "_"), full.names = TRUE)
-  f_c <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "Confluency"),        pattern = paste0("^",id, "_"), full.names = TRUE)
+  f   <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "DetectionResults"), pattern = paste0("^",id, "_[0-9]+x_ph"), full.names = TRUE)
+  f_a <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "Annotations"),      pattern = paste0("^",id, "_[0-9]+x_ph"), full.names = TRUE)
+  f_c <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "Confluency"),        pattern = paste0("^",id, "_[0-9]+x_ph"), full.names = TRUE)
   f_c <- grep(".csv", f_c, value = TRUE)
   print(paste0("Output found for ", fileparts(f_o[1])$name, " and ", (length(f_o) - 1), " other image files."), quote = FALSE)
   return(list(f = f, f_a = f_a, f_o = f_o, f_c = f_c))
