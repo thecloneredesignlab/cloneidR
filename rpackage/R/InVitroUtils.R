@@ -411,8 +411,9 @@ plotLiquidNitrogenBox <- function (rack, row) {
   }
   
   if (CHECKRESULT != "pass") {
-    .wait_for_confirmation(CHECKRESULT, timeout = 10)
-    return()
+    .msg("error", "validation", CHECKRESULT)
+    dbDisconnect(mydb)
+    stop(CHECKRESULT)
   }
   ## TODO: What if from is too far in the past
   
