@@ -400,14 +400,20 @@ plotLiquidNitrogenBox <- function (rack, row) {
     CHECKRESULT=paste(from,"is not a",otherevent,". You must do",event,"from a",otherevent)
   }else if(event=="seeding" && !is.na(parent$cellCount) && !is.na(cellCount) && cellCount>parent$cellCount){
     CHECKRESULT="You cannot seed more than is available from harvest!"
-  }else if(is.na(parent$media) || !is.null(media)){
-    if(is.null(media)){
-      CHECKRESULT="Please enter media information"
-    }else{
-      parent$media = media
-    }
   }else{
-    warning(paste("Copying media information from parent: media set to",parent$media))
+    # Normalize "Parent" sentinel and empty string to NULL so they follow the
+    # same inheritance path as a missing media argument.
+    if (!is.null(media) && (media == "Parent" || media == "")) media <- NULL
+
+    if(is.na(parent$media) || !is.null(media)){
+      if(is.null(media)){
+        CHECKRESULT="Please enter media information"
+      }else{
+        parent$media = media
+      }
+    }else{
+      warning(paste("Copying media information from parent: media set to",parent$media))
+    }
   }
   
   if (CHECKRESULT != "pass") {
