@@ -1286,3 +1286,840 @@ pedigree_dist <- function(conn, ids, cellLine) {
   
   return(distance_matrix)
 }
+
+
+# ---------------------------------------------------------------------------
+# Subtree SQL export — internal helpers and public function
+# ---------------------------------------------------------------------------
+
+#' Serialize a single scalar DB value to a SQL literal.
+#'
+#' @param x     A scalar value as returned by RMySQL fetch().
+#' @param conn  An open DBI/RMySQL connection (used for dbQuoteString).
+#' @param blob  Logical. If TRUE, treat a non-NA character value as raw binary
+#'              and emit a MySQL hex literal (0x...). Use for mediumblob columns
+#'              such as Perspective.profile and Loci.content.
+#' @return A character string containing the SQL literal, ready for INSERT.
+.sql_val <- function(x, conn, blob = FALSE) {
+  # NULL / empty
+  if (is.null(x) || length(x) == 0) return("NULL")
+
+  # raw vector -> hex literal.
+  # Must be checked BEFORE the length > 1 guard: a raw vector of N bytes
+  # represents one blob value, not N scalars.
+  if (is.raw(x)) {
+    if (length(x) == 0) return("NULL")
+    return(paste0("0x", paste(sprintf("%02X", as.integer(x)), collapse = "")))
+  }
+
+  # list column (RMySQL mediumblob return type): each cell is a raw vector
+  # or NULL.  Handle both before the scalar length guard.
+  if (is.list(x) && length(x) == 1) {
+    inner <- x[[1]]
+    if (is.null(inner)) return("NULL")
+    if (is.raw(inner)) {
+      if (length(inner) == 0) return("NULL")
+      return(paste0("0x", paste(sprintf("%02X", as.integer(inner)), collapse = "")))
+    }
+  }
+
+  # All remaining types are expected to be scalar.
+  if (length(x) > 1) stop(".sql_val expects a scalar, got length ", length(x))
+  if (is.na(x))      return("NULL")
+
+  # logical -> 0/1
+  if (is.logical(x)) return(as.character(as.integer(x)))
+
+  # POSIXct / POSIXlt timestamps -> 'YYYY-MM-DD HH:MM:SS'
+  if (inherits(x, c("POSIXct", "POSIXlt", "POSIXt"))) {
+    return(as.character(DBI::dbQuoteString(conn, format(x, "%Y-%m-%d %H:%M:%S"))))
+  }
+
+  # Date -> 'YYYY-MM-DD'
+  if (inherits(x, "Date")) {
+    return(as.character(DBI::dbQuoteString(conn, format(x, "%Y-%m-%d"))))
+  }
+
+  # numeric -> decimal notation, no scientific notation.
+  # digits=15 preserves full double precision (matches MySQL DOUBLE).
+  if (is.numeric(x)) return(format(x, scientific = FALSE, trim = TRUE, digits = 15))
+
+  # character / factor marked as blob column -> hex literal
+  if (blob) {
+    raw_bytes <- charToRaw(as.character(x))
+    if (length(raw_bytes) == 0) return("NULL")
+    return(paste0("0x", paste(sprintf("%02X", as.integer(raw_bytes)), collapse = "")))
+  }
+
+  # character / factor -> quoted string via DBI (handles escaping).
+  # as.character() coerces the SQL class returned by dbQuoteString to plain
+  # character so callers always receive a uniform character vector.
+  return(as.character(DBI::dbQuoteString(conn, as.character(x))))
+}
+
+
+#' Compute the set of Passaging.id values that form the export subtree.
+#'
+#' Descendants are traced exclusively through passaged_from_id1, matching the
+#' convention used by findAllDescendandsOf() and getPedigreeTree() throughout
+#' this package. passaged_from_id2 is NOT used for traversal in v1.
+#'
+#' Uses .db_fetch() for all reads — consistent with the package's established
+#' read helper. No writes are performed.
+#'
+#' @param root_id   Character. The Passaging.id at the root of the subtree.
+#' @param recursive Logical. FALSE (default) = root + direct children only
+#'                  (rows where passaged_from_id1 == root_id). TRUE = full
+#'                  recursive closure via passaged_from_id1, matching the
+#'                  findAllDescendandsOf() traversal pattern.
+#' @param conn      Open DBI/RMySQL connection. Read-only — no writes are made.
+#' @return Character vector of Passaging.id values in the subtree, with
+#'         root_id first and remaining ids in DFS order. Guaranteed unique.
+.subtree_ids <- function(root_id, recursive = FALSE, conn) {
+  # Fail fast if root does not exist — avoids silently emitting an empty dump.
+  # root_id is quoted via DBI::dbQuoteString; not interpolated raw.
+  root_check <- .db_fetch(
+    paste0("SELECT id FROM Passaging WHERE id = ",
+           DBI::dbQuoteString(conn, root_id),
+           " ORDER BY id"),
+    conn = conn
+  )
+  if (nrow(root_check) == 0) {
+    stop("Passaging.id not found: ", root_id)
+  }
+
+  # Internal helper: collect descendant ids via passaged_from_id1.
+  # For recursive=FALSE this is called once; the guard prevents further descent.
+  # ORDER BY id makes child enumeration deterministic regardless of DB storage order.
+  .trace_children <- function(parent_id) {
+    kids <- .db_fetch(
+      paste0("SELECT id FROM Passaging WHERE passaged_from_id1 = ",
+             DBI::dbQuoteString(conn, parent_id),
+             " ORDER BY id"),
+      conn = conn
+    )
+    ids <- kids$id  # character vector, length 0 if no children
+    if (recursive && length(ids) > 0) {
+      for (kid_id in ids) {
+        ids <- c(ids, .trace_children(kid_id))
+      }
+    }
+    return(ids)
+  }
+
+  descendant_ids <- .trace_children(root_id)
+  return(unique(c(root_id, descendant_ids)))
+}
+
+
+#' Serialize a data frame of DB rows into a vector of SQL INSERT statements.
+#'
+#' Pure text serialization — no DB writes of any kind. The caller is
+#' responsible for fetching and ordering rows before passing them here.
+#' Row order and column order are preserved exactly as supplied; no sorting
+#' or reordering is performed inside this function. conn is used solely for
+#' DBI::dbQuoteString() (string escaping) — no queries are sent.
+#'
+#' RMySQL returns mediumblob columns as list columns (each cell is a raw vector
+#' or NULL). This function detects list columns and extracts values with [[]]
+#' rather than [] to recover the actual raw vector before passing to .sql_val().
+#'
+#' @param table     Character. Table name (will be backtick-quoted).
+#' @param df        Data frame of rows to INSERT, as returned by fetch().
+#' @param conn      Open DBI/RMySQL connection (passed to .sql_val for quoting).
+#' @param blob_cols Character vector of column names that are blob/binary type.
+#'                  Values in these columns are serialized as 0x<HEX> literals.
+#'                  Known v1 blob columns: "profile" (Perspective), "content" (Loci).
+#' @return Character vector of INSERT statements, one per row. Empty vector if
+#'         df has zero rows.
+.rows_to_inserts <- function(table, df, conn, blob_cols = character(0)) {
+  if (nrow(df) == 0) return(character(0))
+
+  cols     <- names(df)
+  col_list <- paste(paste0("`", cols, "`"), collapse = ", ")
+  tbl      <- paste0("`", table, "`")
+
+  # Pre-compute which columns are list columns (RMySQL blob return type)
+  is_list_col <- vapply(cols, function(col) is.list(df[[col]]), logical(1))
+
+  stmts <- vapply(seq_len(nrow(df)), function(i) {
+    vals <- vapply(seq_along(cols), function(j) {
+      col <- cols[j]
+      # Use [[i]] for list columns (blobs), [i] for atomic columns
+      x <- if (is_list_col[j]) df[[col]][[i]] else df[[col]][i]
+      .sql_val(x, conn, blob = col %in% blob_cols)
+    }, character(1))
+    paste0("INSERT INTO ", tbl, " (", col_list, ") VALUES (",
+           paste(vals, collapse = ", "), ");")
+  }, character(1))
+
+  return(stmts)
+}
+
+
+#' Fetch all FK-required dependency rows for an already-fetched set of Passaging rows.
+#'
+#' Covers the four tables that Passaging directly references:
+#'   CellLinesAndPatients  (via Passaging.cellLine)
+#'   Flask                 (via Passaging.flask)
+#'   Media                 (via Passaging.media)
+#'   MediaIngredients      (via the 13 FK columns in Media; schema lines 301-314)
+#'
+#' Each table is queried only for the referenced key values present in the
+#' supplied passaging_rows; NULLs are skipped. Rows are ordered by primary key
+#' for deterministic output. Missing referenced rows are treated as a DB
+#' integrity error and cause stop().
+#'
+#' @param passaging_rows Data frame of Passaging rows (already fetched).
+#' @param conn           Open DBI/RMySQL connection. Read-only.
+#' @return Named list with elements: cell_lines, flasks, media, media_ingredients.
+#'         Each element is a data frame (zero rows possible; columns always present).
+.fetch_dependency_closure <- function(passaging_rows, conn) {
+
+  # Build a safe SQL IN clause from a character vector of already-quoted literals.
+  # Values are quoted via DBI::dbQuoteString before being passed here.
+  .in_clause_chr <- function(vals) {
+    paste0("(", paste(DBI::dbQuoteString(conn, vals), collapse = ", "), ")")
+  }
+
+  # Build a safe SQL IN clause for integer FK values (flask, media ids).
+  .in_clause_int <- function(vals) {
+    paste0("(", paste(as.integer(vals), collapse = ", "), ")")
+  }
+
+  # Return an empty data frame with the correct column schema for a table.
+  .empty_table <- function(table_name) {
+    .db_fetch(paste0("SELECT * FROM `", table_name, "` WHERE 1=0"), conn = conn)
+  }
+
+  # All FK column names in Media that reference MediaIngredients(name).
+  # Derived from CLONEID_schema.sql lines 301-314 (Media_ibfk_1 through _14).
+  MEDIA_INGREDIENT_FK_COLS <- c(
+    "base1", "base2", "FBS", "EnergySource2", "EnergySource",
+    "HEPES", "Salt", "antibiotic", "antibiotic2", "antimycotic",
+    "Stressor", "antibiotic3", "antibiotic4"
+  )
+
+  # -------------------------------------------------------------------------
+  # CellLinesAndPatients — referenced by Passaging.cellLine (varchar FK)
+  # -------------------------------------------------------------------------
+  cl_vals <- unique(passaging_rows$cellLine[!is.na(passaging_rows$cellLine)])
+  if (length(cl_vals) > 0) {
+    cell_lines <- .db_fetch(
+      paste0("SELECT * FROM `CellLinesAndPatients` WHERE `name` IN ",
+             .in_clause_chr(cl_vals), " ORDER BY `name`"),
+      conn = conn
+    )
+    # Case-insensitive comparison: MySQL's default collation resolves varchar
+    # lookups case-insensitively, so normalise both sides with tolower() before
+    # setdiff to avoid false "missing" reports when capitalisation differs.
+    # The fetched rows (cell_lines) are returned unchanged.
+    missing <- setdiff(tolower(cl_vals), tolower(cell_lines$name))
+    if (length(missing) > 0) {
+      stop("CellLinesAndPatients rows missing for cellLine value(s): ",
+           paste(missing, collapse = ", "))
+    }
+  } else {
+    cell_lines <- .empty_table("CellLinesAndPatients")
+  }
+
+  # -------------------------------------------------------------------------
+  # Flask — referenced by Passaging.flask (int FK)
+  # -------------------------------------------------------------------------
+  flask_vals <- unique(passaging_rows$flask[!is.na(passaging_rows$flask)])
+  if (length(flask_vals) > 0) {
+    flasks <- .db_fetch(
+      paste0("SELECT * FROM `Flask` WHERE `id` IN ",
+             .in_clause_int(flask_vals), " ORDER BY `id`"),
+      conn = conn
+    )
+    missing <- setdiff(as.integer(flask_vals), as.integer(flasks$id))
+    if (length(missing) > 0) {
+      stop("Flask rows missing for flask id(s): ",
+           paste(missing, collapse = ", "))
+    }
+  } else {
+    flasks <- .empty_table("Flask")
+  }
+
+  # -------------------------------------------------------------------------
+  # Media — referenced by Passaging.media (int FK)
+  # -------------------------------------------------------------------------
+  media_vals <- unique(passaging_rows$media[!is.na(passaging_rows$media)])
+  if (length(media_vals) > 0) {
+    media_rows <- .db_fetch(
+      paste0("SELECT * FROM `Media` WHERE `id` IN ",
+             .in_clause_int(media_vals), " ORDER BY `id`"),
+      conn = conn
+    )
+    missing <- setdiff(as.integer(media_vals), as.integer(media_rows$id))
+    if (length(missing) > 0) {
+      stop("Media rows missing for media id(s): ",
+           paste(missing, collapse = ", "))
+    }
+  } else {
+    media_rows <- .empty_table("Media")
+  }
+
+  # -------------------------------------------------------------------------
+  # MediaIngredients — referenced by 13 FK columns in Media
+  # Collect all non-null ingredient names across all returned Media rows.
+  # -------------------------------------------------------------------------
+  mi_vals <- character(0)
+  if (nrow(media_rows) > 0) {
+    present_fk_cols <- intersect(MEDIA_INGREDIENT_FK_COLS, names(media_rows))
+    for (col in present_fk_cols) {
+      mi_vals <- c(mi_vals, media_rows[[col]][!is.na(media_rows[[col]])])
+    }
+    mi_vals <- unique(mi_vals)
+  }
+  if (length(mi_vals) > 0) {
+    media_ingredients <- .db_fetch(
+      paste0("SELECT * FROM `MediaIngredients` WHERE `name` IN ",
+             .in_clause_chr(mi_vals), " ORDER BY `name`"),
+      conn = conn
+    )
+    # Case-insensitive comparison for the same reason as CellLinesAndPatients.
+    missing <- setdiff(tolower(mi_vals), tolower(media_ingredients$name))
+    if (length(missing) > 0) {
+      stop("MediaIngredients rows missing for ingredient name(s): ",
+           paste(missing, collapse = ", "))
+    }
+  } else {
+    media_ingredients <- .empty_table("MediaIngredients")
+  }
+
+  list(
+    cell_lines        = cell_lines,
+    flasks            = flasks,
+    media             = media_rows,
+    media_ingredients = media_ingredients
+  )
+}
+
+
+#' Fetch Perspective rows rooted in the exported passaging id set, and the
+#' Loci rows they reference.
+#'
+#' Implements the two-stage perspective closure described in the report:
+#'   1. SELECT all Perspective rows whose origin is in export_ids.
+#'   2. Derive the referenced Loci.id set from those rows (via profile_loci).
+#'   3. Fetch those Loci rows.
+#'
+#' This matches the pattern already used in GenomePerspectiveView_Bulk()
+#' (InVitroUtils.R:1210-1220), which queries Perspective by origin IN (ids)
+#' after obtaining descendant ids from findAllDescendandsOf().
+#'
+#' Identity, FlowCytometry, IdentitySub, and PerspectivePartial are explicitly
+#' excluded from v1 scope.
+#'
+#' Both Perspective.profile and Loci.content are mediumblob. The caller must
+#' pass blob_cols = "profile" when serializing Perspective rows, and
+#' blob_cols = "content" when serializing Loci rows, via .rows_to_inserts().
+#'
+#' @param export_ids Character vector of Passaging.id values in the subtree.
+#' @param conn       Open DBI/RMySQL connection. Read-only.
+#' @return Named list with elements:
+#'   perspectives — data frame of Perspective rows ordered by cloneID (PK).
+#'   loci         — data frame of Loci rows ordered by id (PK).
+#'                  Empty data frames (with correct columns) when no rows exist.
+.fetch_perspective_closure <- function(export_ids, conn) {
+
+  # Return an empty data frame with the correct column schema for a table.
+  .empty_table <- function(table_name) {
+    .db_fetch(paste0("SELECT * FROM `", table_name, "` WHERE 1=0"), conn = conn)
+  }
+
+  # -------------------------------------------------------------------------
+  # Stage 1: Perspective rows whose origin is in the exported passaging id set.
+  # Ordered by cloneID (integer primary key) for deterministic row order.
+  # -------------------------------------------------------------------------
+  if (length(export_ids) > 0) {
+    in_clause <- paste0(
+      "(",
+      paste(DBI::dbQuoteString(conn, export_ids), collapse = ", "),
+      ")"
+    )
+    perspective_rows <- .db_fetch(
+      paste0("SELECT * FROM `Perspective` WHERE `origin` IN ",
+             in_clause, " ORDER BY `cloneID`"),
+      conn = conn
+    )
+  } else {
+    perspective_rows <- .empty_table("Perspective")
+  }
+
+  # -------------------------------------------------------------------------
+  # Stage 2: Loci rows referenced by the included Perspective rows.
+  # profile_loci is nullable — NULLs are skipped.
+  # Ordered by id (integer primary key) for deterministic row order.
+  # -------------------------------------------------------------------------
+  loci_ids <- unique(
+    perspective_rows$profile_loci[!is.na(perspective_rows$profile_loci)]
+  )
+
+  if (length(loci_ids) > 0) {
+    loci_rows <- .db_fetch(
+      paste0("SELECT * FROM `Loci` WHERE `id` IN (",
+             paste(as.integer(loci_ids), collapse = ", "),
+             ") ORDER BY `id`"),
+      conn = conn
+    )
+    missing <- setdiff(as.integer(loci_ids), as.integer(loci_rows$id))
+    if (length(missing) > 0) {
+      stop("Loci rows missing for profile_loci id(s): ",
+           paste(missing, collapse = ", "))
+    }
+  } else {
+    loci_rows <- .empty_table("Loci")
+  }
+
+  list(
+    perspectives = perspective_rows,
+    loci         = loci_rows
+  )
+}
+
+
+#' Fetch storage/location rows tied to the exported Passaging id set.
+#'
+#' Covers the three storage tables that reference Passaging(id):
+#'   LiquidNitrogen              FK: id -> Passaging.id (nullable; composite PK)
+#'   Minus80Freezer              FK: id -> Passaging.id (nullable; composite PK)
+#'   Crypgene_LiquidNitrogenBackup  FK: id -> Passaging.id (id IS the PK, NOT NULL)
+#'
+#' Only rows where id IN export_ids are returned. Storage slots that happen to
+#' be unoccupied or belong to other passaging ids are excluded automatically by
+#' the IN clause. No integrity check is applied — it is normal for exported
+#' Passaging ids to have no storage rows.
+#'
+#' Rows are ordered by each table's primary key for deterministic output:
+#'   LiquidNitrogen:               (Rack, Row, BoxRow, BoxColumn)
+#'   Minus80Freezer:               (Drawer, Position, BoxRow, BoxColumn)
+#'   Crypgene_LiquidNitrogenBackup: id
+#'
+#' @param export_ids Character vector of Passaging.id values in the subtree.
+#' @param conn       Open DBI/RMySQL connection. Read-only.
+#' @return Named list: liquid_nitrogen, minus80_freezer, crypgene_backup.
+#'         Each is a data frame (zero rows when nothing found; columns always present).
+.fetch_storage_rows <- function(export_ids, conn) {
+
+  # Return an empty data frame with the correct column schema for a table.
+  .empty_table <- function(table_name) {
+    .db_fetch(paste0("SELECT * FROM `", table_name, "` WHERE 1=0"), conn = conn)
+  }
+
+  if (length(export_ids) == 0) {
+    return(list(
+      liquid_nitrogen = .empty_table("LiquidNitrogen"),
+      minus80_freezer = .empty_table("Minus80Freezer"),
+      crypgene_backup = .empty_table("Crypgene_LiquidNitrogenBackup")
+    ))
+  }
+
+  in_clause <- paste0(
+    "(",
+    paste(DBI::dbQuoteString(conn, export_ids), collapse = ", "),
+    ")"
+  )
+
+  # LiquidNitrogen — PK: (Rack, Row, BoxRow, BoxColumn)
+  liquid_nitrogen <- .db_fetch(
+    paste0("SELECT * FROM `LiquidNitrogen` WHERE `id` IN ",
+           in_clause,
+           " ORDER BY `Rack`, `Row`, `BoxRow`, `BoxColumn`"),
+    conn = conn
+  )
+
+  # Minus80Freezer — PK: (Drawer, Position, BoxRow, BoxColumn)
+  minus80_freezer <- .db_fetch(
+    paste0("SELECT * FROM `Minus80Freezer` WHERE `id` IN ",
+           in_clause,
+           " ORDER BY `Drawer`, `Position`, `BoxRow`, `BoxColumn`"),
+    conn = conn
+  )
+
+  # Crypgene_LiquidNitrogenBackup — PK: id (same column as the Passaging FK)
+  crypgene_backup <- .db_fetch(
+    paste0("SELECT * FROM `Crypgene_LiquidNitrogenBackup` WHERE `id` IN ",
+           in_clause,
+           " ORDER BY `id`"),
+    conn = conn
+  )
+
+  list(
+    liquid_nitrogen = liquid_nitrogen,
+    minus80_freezer = minus80_freezer,
+    crypgene_backup = crypgene_backup
+  )
+}
+
+
+#' Apply the external parent reference policy to exported Passaging rows.
+#'
+#' Because Passaging.passaged_from_id1 and passaged_from_id2 are self-referencing
+#' FKs, a root that is not a true lineage root will have a passaged_from_id1
+#' pointing outside the exported set. Three policies are supported:
+#'
+#'   "nullify" (default): set any passaged_from_id1 or passaged_from_id2 that
+#'     points outside export_ids to NA in the returned data frame, and record
+#'     every such detachment in detached_parent_refs. The dump imports cleanly
+#'     without expanding scope.
+#'
+#'   "error": stop() immediately if any exported row references a non-exported
+#'     parent. Useful for asserting that the chosen root is a true lineage root.
+#'
+#'   "include": iteratively fetch the missing parent Passaging rows from the DB
+#'     and expand export_ids until full FK closure is reached. Requires conn.
+#'     May significantly grow the dump if the ancestry chain is long.
+#'
+#' @param passaging_rows  Data frame of Passaging rows to export (already fetched).
+#' @param export_ids      Character vector of currently-exported Passaging.id values.
+#' @param policy          One of "nullify", "include", "error".
+#' @param conn            Open DBI/RMySQL connection. Required only for "include".
+#' @return Named list:
+#'   passaging_rows       — data frame, modified per policy.
+#'   export_ids           — character vector, expanded if policy="include".
+#'   detached_parent_refs — data frame(passaging_id, field, original_value);
+#'                          records every field nullified (empty for "include"/"error").
+.apply_external_parent_policy <- function(passaging_rows, export_ids,
+                                          policy, conn = NULL) {
+  policy <- match.arg(policy, c("nullify", "include", "error"))
+
+  # Empty detachment log — columns match regardless of how many rows are added.
+  detached_refs <- data.frame(
+    passaging_id   = character(0),
+    field          = character(0),
+    original_value = character(0),
+    stringsAsFactors = FALSE
+  )
+
+  # -------------------------------------------------------------------------
+  # "error" — fail immediately if any external parent reference exists.
+  # -------------------------------------------------------------------------
+  if (policy == "error") {
+    ext1 <- passaging_rows$passaged_from_id1[
+      !is.na(passaging_rows$passaged_from_id1) &
+        !(passaging_rows$passaged_from_id1 %in% export_ids)
+    ]
+    ext2 <- passaging_rows$passaged_from_id2[
+      !is.na(passaging_rows$passaged_from_id2) &
+        !(passaging_rows$passaged_from_id2 %in% export_ids)
+    ]
+    ext_all <- unique(c(ext1, ext2))
+    if (length(ext_all) > 0) {
+      stop("external_parent_policy='error': exported Passaging rows reference ",
+           "non-exported parent id(s): ", paste(sort(ext_all), collapse = ", "))
+    }
+    return(list(passaging_rows       = passaging_rows,
+                export_ids           = export_ids,
+                detached_parent_refs = detached_refs))
+  }
+
+  # -------------------------------------------------------------------------
+  # "nullify" — set external parent refs to NA and log each detachment.
+  # -------------------------------------------------------------------------
+  if (policy == "nullify") {
+    for (field in c("passaged_from_id1", "passaged_from_id2")) {
+      vals         <- passaging_rows[[field]]
+      external_mask <- !is.na(vals) & !(vals %in% export_ids)
+      if (any(external_mask)) {
+        detached_refs <- rbind(
+          detached_refs,
+          data.frame(
+            passaging_id   = passaging_rows$id[external_mask],
+            field          = field,
+            original_value = vals[external_mask],
+            stringsAsFactors = FALSE
+          )
+        )
+        passaging_rows[[field]][external_mask] <- NA
+      }
+    }
+    return(list(passaging_rows       = passaging_rows,
+                export_ids           = export_ids,
+                detached_parent_refs = detached_refs))
+  }
+
+  # -------------------------------------------------------------------------
+  # "include" — iteratively pull in missing parent rows until FK closure.
+  # Each iteration fetches newly-discovered external parents, adds them to
+  # passaging_rows, and continues until no unresolved external refs remain.
+  # -------------------------------------------------------------------------
+  if (is.null(conn)) {
+    stop(".apply_external_parent_policy with policy='include' requires conn")
+  }
+
+  seen_ids <- export_ids
+
+  repeat {
+    ext1 <- passaging_rows$passaged_from_id1[
+      !is.na(passaging_rows$passaged_from_id1) &
+        !(passaging_rows$passaged_from_id1 %in% seen_ids)
+    ]
+    ext2 <- passaging_rows$passaged_from_id2[
+      !is.na(passaging_rows$passaged_from_id2) &
+        !(passaging_rows$passaged_from_id2 %in% seen_ids)
+    ]
+    missing_ids <- unique(c(ext1, ext2))
+    if (length(missing_ids) == 0) break
+
+    in_clause <- paste0(
+      "(",
+      paste(DBI::dbQuoteString(conn, missing_ids), collapse = ", "),
+      ")"
+    )
+    new_rows <- .db_fetch(
+      paste0("SELECT * FROM `Passaging` WHERE `id` IN ",
+             in_clause, " ORDER BY `id`"),
+      conn = conn
+    )
+    not_found <- setdiff(missing_ids, new_rows$id)
+    if (length(not_found) > 0) {
+      stop("external_parent_policy='include': referenced parent id(s) not found ",
+           "in Passaging: ", paste(sort(not_found), collapse = ", "))
+    }
+    passaging_rows <- rbind(passaging_rows, new_rows)
+    seen_ids       <- c(seen_ids, new_rows$id)
+  }
+
+  # Deduplicate and re-sort by id for deterministic order.
+  passaging_rows <- passaging_rows[!duplicated(passaging_rows$id), ]
+  passaging_rows <- passaging_rows[order(passaging_rows$id), ]
+
+  list(passaging_rows       = passaging_rows,
+       export_ids           = seen_ids,
+       detached_parent_refs = detached_refs)
+}
+
+
+#' Export a partial SQL dump rooted at a single Passaging.id.
+#'
+#' Produces a self-contained, FK-safe, reloadable SQL dump of the in-vitro
+#' lineage subtree rooted at \code{id}, including all required dependency rows.
+#'
+#' Orchestration order (important for external_parent_policy = "include"):
+#'   1. Compute subtree ids via passaged_from_id1 traversal.
+#'   2. Fetch Passaging rows.
+#'   3. Apply external parent policy — export_ids and passaging_rows may expand.
+#'   4. Fetch dependency closure (CellLinesAndPatients, Flask, Media,
+#'      MediaIngredients) from the final expanded passaging_rows.
+#'   5. Fetch Perspective + Loci closure from the final expanded export_ids.
+#'   6. Fetch storage rows from the final expanded export_ids.
+#'
+#' FK-safe INSERT order:
+#'   CellLinesAndPatients -> MediaIngredients -> Media -> Flask ->
+#'   Loci -> Passaging -> Perspective ->
+#'   LiquidNitrogen -> Minus80Freezer -> Crypgene_LiquidNitrogenBackup
+#'
+#' V1 policy for Perspective.parent and Perspective.rootID:
+#'   Both columns are plain int DEFAULT NULL with no FK constraint in the schema
+#'   (CLONEID_schema.sql lines 461-487). MySQL will not enforce them on import,
+#'   so they cannot cause FK violations. They are exported as-is without
+#'   additional closure. Some values may reference Perspective.cloneID rows
+#'   outside the exported slice; this is deliberate and safe in v1.
+#'
+#' @param id                    Character. Passaging.id of the subtree root.
+#' @param file                  Character path or NULL. If non-NULL the SQL is
+#'                              written to this file (in addition to returning it).
+#' @param recursive             Logical. FALSE (default) = root + direct children.
+#'                              TRUE = full descendant closure.
+#' @param include_storage       Logical. Include LiquidNitrogen, Minus80Freezer,
+#'                              Crypgene_LiquidNitrogenBackup rows.
+#' @param include_perspectives  Logical. Include Perspective and Loci rows.
+#' @param conn                  Open DBI/RMySQL connection, or NULL to open one.
+#' @param external_parent_policy One of "nullify" (default), "include", "error".
+#' @return Named list:
+#'   sql                  — single character string, the complete SQL dump.
+#'   statements           — character vector: "START TRANSACTION;", all INSERT
+#'                          statements in FK-safe order, "COMMIT;". Suitable for
+#'                          replaying into a clean schema in tests.
+#'   export_ids           — character vector of exported Passaging.id values
+#'                          (may be expanded by policy="include").
+#'   detached_parent_refs — data frame(passaging_id, field, original_value)
+#'                          listing every parent ref nullified (policy="nullify").
+#'   tables               — named list of row counts per exported table.
+export_passaging_subtree_sql <- function(
+    id,
+    file                   = NULL,
+    recursive              = FALSE,
+    include_storage        = TRUE,
+    include_perspectives   = TRUE,
+    conn                   = NULL,
+    external_parent_policy = c("nullify", "include", "error")) {
+
+  external_parent_policy <- match.arg(external_parent_policy)
+
+  # Connection lifecycle: open a fresh connection if none supplied, and ensure
+  # it is closed on exit only if we opened it (caller-supplied connections are
+  # left open for the caller to manage).
+  opened_conn <- FALSE
+  if (is.null(conn)) {
+    conn        <- connect2DB()
+    opened_conn <- TRUE
+  }
+  on.exit({
+    if (opened_conn) try(dbDisconnect(conn), silent = TRUE)
+  }, add = TRUE)
+
+  # -------------------------------------------------------------------------
+  # 1. Compute subtree ids (fails fast if root not found)
+  # -------------------------------------------------------------------------
+  export_ids <- .subtree_ids(id, recursive = recursive, conn = conn)
+
+  # -------------------------------------------------------------------------
+  # 2. Fetch Passaging rows for the initial subtree
+  # -------------------------------------------------------------------------
+  passaging_rows <- .db_fetch(
+    paste0("SELECT * FROM `Passaging` WHERE `id` IN (",
+           paste(DBI::dbQuoteString(conn, export_ids), collapse = ", "),
+           ") ORDER BY `id`"),
+    conn = conn
+  )
+
+  # -------------------------------------------------------------------------
+  # 3. Apply external parent policy.
+  # export_ids and passaging_rows are replaced with the policy results here.
+  # All downstream fetches use these final values, so policy="include" correctly
+  # expands the dependency / perspective / storage closures too.
+  # -------------------------------------------------------------------------
+  policy_result        <- .apply_external_parent_policy(
+    passaging_rows         = passaging_rows,
+    export_ids             = export_ids,
+    policy                 = external_parent_policy,
+    conn                   = conn
+  )
+  passaging_rows       <- policy_result$passaging_rows
+  export_ids           <- policy_result$export_ids
+  detached_parent_refs <- policy_result$detached_parent_refs
+
+  # -------------------------------------------------------------------------
+  # 4. Dependency closure — uses final passaging_rows (step 3 output)
+  # -------------------------------------------------------------------------
+  deps <- .fetch_dependency_closure(passaging_rows, conn = conn)
+
+  # -------------------------------------------------------------------------
+  # 5. Perspective + Loci closure — uses final export_ids (step 3 output)
+  # -------------------------------------------------------------------------
+  if (include_perspectives) {
+    persp <- .fetch_perspective_closure(export_ids, conn = conn)
+  } else {
+    persp <- list(perspectives = data.frame(), loci = data.frame())
+  }
+
+  # -------------------------------------------------------------------------
+  # 6. Storage rows — uses final export_ids (step 3 output)
+  # -------------------------------------------------------------------------
+  if (include_storage) {
+    storage <- .fetch_storage_rows(export_ids, conn = conn)
+  } else {
+    storage <- list(liquid_nitrogen = data.frame(),
+                    minus80_freezer = data.frame(),
+                    crypgene_backup = data.frame())
+  }
+
+  # -------------------------------------------------------------------------
+  # Build INSERT statements per table in FK-safe order.
+  # blob_cols must be specified for mediumblob columns:
+  #   Loci.content, Perspective.profile
+  # -------------------------------------------------------------------------
+  cl_stmts  <- .rows_to_inserts("CellLinesAndPatients",          deps$cell_lines,        conn)
+  mi_stmts  <- .rows_to_inserts("MediaIngredients",              deps$media_ingredients, conn)
+  med_stmts <- .rows_to_inserts("Media",                         deps$media,             conn)
+  fl_stmts  <- .rows_to_inserts("Flask",                         deps$flasks,            conn)
+  lo_stmts  <- .rows_to_inserts("Loci",                          persp$loci,             conn,
+                                blob_cols = "content")
+  pa_stmts  <- .rows_to_inserts("Passaging",                     passaging_rows,         conn)
+  pe_stmts  <- .rows_to_inserts("Perspective",                   persp$perspectives,     conn,
+                                blob_cols = "profile")
+  ln_stmts  <- .rows_to_inserts("LiquidNitrogen",                storage$liquid_nitrogen, conn)
+  m8_stmts  <- .rows_to_inserts("Minus80Freezer",                storage$minus80_freezer, conn)
+  cg_stmts  <- .rows_to_inserts("Crypgene_LiquidNitrogenBackup", storage$crypgene_backup, conn)
+
+  # Ordered INSERT-only vector — used for the `statements` return field and
+  # for replay in tests (no comments, just executable SQL).
+  insert_stmts <- c(cl_stmts, mi_stmts, med_stmts, fl_stmts,
+                    lo_stmts, pa_stmts, pe_stmts,
+                    ln_stmts, m8_stmts, cg_stmts)
+
+  # replay-ready statements vector: transaction wrapper + all inserts
+  statements <- c("START TRANSACTION;", insert_stmts, "COMMIT;")
+
+  # -------------------------------------------------------------------------
+  # Assemble formatted SQL dump with section headers
+  # -------------------------------------------------------------------------
+  .section <- function(label, stmts) {
+    if (length(stmts) == 0) return(character(0))
+    c(paste0("\n-- ", label), stmts)
+  }
+
+  detach_summary <- if (nrow(detached_parent_refs) > 0) {
+    paste(apply(detached_parent_refs, 1, function(r) {
+      paste0(r["passaging_id"], ".", r["field"], " (was: ", r["original_value"], ")")
+    }), collapse = "; ")
+  } else {
+    "none"
+  }
+
+  pkg_ver <- tryCatch(as.character(packageVersion("cloneid")), error = function(e) "unknown")
+
+  header <- paste(c(
+    "-- CLONEID subtree export",
+    paste0("-- root_id:                ", id),
+    paste0("-- recursive:              ", recursive),
+    paste0("-- include_storage:        ", include_storage),
+    paste0("-- include_perspectives:   ", include_perspectives),
+    paste0("-- external_parent_policy: ", external_parent_policy),
+    paste0("-- exported_at:            ", format(Sys.time(), "%Y-%m-%d %H:%M:%S")),
+    paste0("-- package_version:        ", pkg_ver),
+    paste0("-- exported_ids:           ", paste(sort(export_ids), collapse = ", ")),
+    paste0("-- detached_parent_refs:   ", detach_summary)
+  ), collapse = "\n")
+
+  sql_body <- c(
+    .section("CellLinesAndPatients",          cl_stmts),
+    .section("MediaIngredients",              mi_stmts),
+    .section("Media",                         med_stmts),
+    .section("Flask",                         fl_stmts),
+    .section("Loci",                          lo_stmts),
+    .section("Passaging",                     pa_stmts),
+    .section("Perspective",                   pe_stmts),
+    .section("LiquidNitrogen",                ln_stmts),
+    .section("Minus80Freezer",                m8_stmts),
+    .section("Crypgene_LiquidNitrogenBackup", cg_stmts)
+  )
+
+  sql <- paste(c(header, "", "START TRANSACTION;",
+                 sql_body,
+                 "", "COMMIT;"),
+               collapse = "\n")
+
+  # -------------------------------------------------------------------------
+  # Write to file if requested
+  # -------------------------------------------------------------------------
+  if (!is.null(file)) {
+    writeLines(sql, con = file)
+  }
+
+  # -------------------------------------------------------------------------
+  # Return structured object
+  # -------------------------------------------------------------------------
+  list(
+    sql                  = sql,
+    statements           = statements,
+    export_ids           = export_ids,
+    detached_parent_refs = detached_parent_refs,
+    tables               = list(
+      CellLinesAndPatients          = nrow(deps$cell_lines),
+      MediaIngredients              = nrow(deps$media_ingredients),
+      Media                         = nrow(deps$media),
+      Flask                         = nrow(deps$flasks),
+      Loci                          = nrow(persp$loci),
+      Passaging                     = nrow(passaging_rows),
+      Perspective                   = nrow(persp$perspectives),
+      LiquidNitrogen                = nrow(storage$liquid_nitrogen),
+      Minus80Freezer                = nrow(storage$minus80_freezer),
+      Crypgene_LiquidNitrogenBackup = nrow(storage$crypgene_backup)
+    )
+  )
+}
