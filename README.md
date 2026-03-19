@@ -2,6 +2,24 @@
 
 CLONEID is a framework that integrates measurements obtained from different technologies, or from multi-spatial or longitudinal biopsies, into a comprehensive approximation of the identities of coexisting tumor clones. The framework comes with a SQL database that keeps track of clones over multiple spatially or temporally connected sequencing experiments. The database also links these high-throughput measurements to the growth conditions of cells from which they were obtained. A main goal of CLONEID is to facilitate tracking the pedigree of evolving cell lines over decades along with potentially changing cell culture habits. This can reveal long-term trends in the clonal evolution of cell lines, that would have remained elusive at smaller time-scales.
 
+### Repository branches
+
+This repository retains four historical branches that remain relevant to current CLONEID package use.
+
+- **`master`**  
+  Baseline branch of the package. This reflects the original main development line outside the web portal integration work.
+
+- **`revertAutomaticScaleBarSeg`**  
+  Variant of the master branch in which AutomaticScaleBarSegmentation was reverted because that behavior was not sufficiently reliable in practice.
+  
+- **`merging2IVR`**  
+  Portal-aligned package branch. This branch contains the modifications that made the master branch usable as the backend for the IVR web portal, with the portal acting as a relatively thin wrapper around package functionality. This should become the primary portal-oriented branch in the future.
+
+- **`merging2IVR4PortalTestOnly`**  
+  Portal-compatibility branch that retains an older Python-side implementation path so the web portal can continue to function without requiring additional portal-side adjustment on that front.
+
+Unless a workflow specifically depends on one of the compatibility variants, `merging2IVR4PortalTestOnly` should generally be treated as the primary portal-oriented branch.
+
 ### Contents 
 
 1. [Requirements](#requirements)
