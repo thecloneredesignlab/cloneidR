@@ -1183,14 +1183,16 @@ test_that("export_passaging_subtree_sql wrapper returns same top-level structure
 # Helper: build a minimal Perspective data frame row with all columns required
 # by .decode_perspective_profiles().
 .persp_row_full <- function(clone_id, origin,
-                             which_p   = "GenomePerspective",
-                             size      = 1,
+                             which_p      = "GenomePerspective",
+                             size         = 1,
+                             parent       = NA_integer_,
                              profile_loci = NA_integer_) {
   data.frame(
     cloneID          = as.integer(clone_id),
     whichPerspective = as.character(which_p),
     origin           = as.character(origin),
     size             = as.numeric(size),
+    parent           = as.integer(parent),
     profile_loci     = as.integer(profile_loci),
     profile          = I(list(as.raw(0x00))),
     stringsAsFactors = FALSE
@@ -1227,8 +1229,13 @@ test_that(".decode_perspective_profiles: missing required columns produces warni
 })
 
 test_that(".decode_perspective_profiles: valid single pair returns decoded matrix under correct keys", {
-  df <- .persp_row_full(clone_id = 42L, origin = "origin1",
-                         which_p = "GenomePerspective", size = 1)
+  # Two-node tree: root(42) -> child(43).  internal_ids = {42L}.
+  df <- rbind(
+    .persp_row_full(clone_id = 42L, origin = "origin1",
+                     which_p = "GenomePerspective"),
+    .persp_row_full(clone_id = 43L, origin = "origin1",
+                     which_p = "GenomePerspective", parent = 42L)
+  )
   expected_mat <- .mock_profile_matrix()
   with_mocked_bindings(
     getSubProfiles = function(cloneID_or_sampleName, whichP, ...) {
@@ -1248,48 +1255,102 @@ test_that(".decode_perspective_profiles: valid single pair returns decoded matri
   )
 })
 
-test_that(".decode_perspective_profiles: no size==1 row produces warning and skips pair", {
-  df <- .persp_row_full(clone_id = 10L, origin = "o1", size = 0.5)
+test_that(".decode_perspective_profiles: leaf-only slice produces warning and skips pair", {
+  # A single row with parent=NA: no row is an internal node; pair is skipped.
+  df <- .persp_row_full(clone_id = 10L, origin = "o1")
   result <- .decode_profiles(df)
   expect_equal(result$profiles, list())
   expect_equal(length(result$warnings), 1L)
-  expect_match(result$warnings[1], "no row with size==1")
+  expect_match(result$warnings[1], "no internal nodes")
 })
 
-test_that(".decode_perspective_profiles: multiple size==1 rows produce warning and skip pair", {
+test_that(".decode_perspective_profiles: multi-level tree decodes all internal nodes", {
+  # Three-node tree: root(10) -> inner(11) -> leaf(12).
+  # internal_ids = {10L, 11L}: getSubProfiles is called for each level.
   df <- rbind(
-    .persp_row_full(clone_id = 10L, origin = "o1", size = 1),
-    .persp_row_full(clone_id = 11L, origin = "o1", size = 1)
+    .persp_row_full(clone_id = 10L, origin = "o1"),
+    .persp_row_full(clone_id = 11L, origin = "o1", parent = 10L),
+    .persp_row_full(clone_id = 12L, origin = "o1", parent = 11L)
   )
-  result <- .decode_profiles(df)
-  expect_equal(result$profiles, list())
-  expect_equal(length(result$warnings), 1L)
-  expect_match(result$warnings[1], "2 rows with size==1")
+  mat_10 <- matrix(3, nrow = 1L, ncol = 1L,
+                   dimnames = list("1:0-1", "ID11"))
+  mat_11 <- matrix(4, nrow = 1L, ncol = 1L,
+                   dimnames = list("1:0-1", "ID12"))
+  with_mocked_bindings(
+    getSubProfiles = function(cloneID_or_sampleName, whichP, ...) {
+      if (cloneID_or_sampleName == 10L) return(mat_10)
+      if (cloneID_or_sampleName == 11L) return(mat_11)
+      stop("unexpected cloneID: ", cloneID_or_sampleName)
+    },
+    .package = "cloneid",
+    code = {
+      result <- .decode_profiles(df)
+      expect_equal(result$warnings, character(0))
+      combined <- result$profiles[["GenomePerspective"]][["o1"]]
+      expect_false(is.null(combined))
+      # Both levels decoded: columns from both getSubProfiles calls present.
+      expect_true("ID11" %in% colnames(combined))
+      expect_true("ID12" %in% colnames(combined))
+      expect_equal(ncol(combined), 2L)
+    }
+  )
 })
 
-test_that(".decode_perspective_profiles: NA cloneID produces warning and skips pair", {
-  df <- .persp_row_full(clone_id = NA_integer_, origin = "o1", size = 1)
-  result <- .decode_profiles(df)
-  expect_equal(result$profiles, list())
-  expect_equal(length(result$warnings), 1L)
-  expect_match(result$warnings[1], "cloneID.*NA")
+test_that(".decode_perspective_profiles: per-node error isolated; remaining nodes in same pair succeed", {
+  # Three-node tree: root(30) -> inner(31) -> leaf(32).
+  # internal_ids = {30L, 31L}.  getSubProfiles(30L) fails; (31L) succeeds.
+  df <- rbind(
+    .persp_row_full(clone_id = 30L, origin = "o1"),
+    .persp_row_full(clone_id = 31L, origin = "o1", parent = 30L),
+    .persp_row_full(clone_id = 32L, origin = "o1", parent = 31L)
+  )
+  mat_31 <- matrix(7, nrow = 1L, ncol = 1L, dimnames = list("1:0-1", "ID32"))
+  with_mocked_bindings(
+    getSubProfiles = function(cloneID_or_sampleName, whichP, ...) {
+      if (cloneID_or_sampleName == 30L) stop("simulated error on root node")
+      mat_31
+    },
+    .package = "cloneid",
+    code = {
+      result <- .decode_profiles(df)
+      expect_equal(length(result$warnings), 1L)
+      expect_match(result$warnings[1], "simulated error on root node")
+      combined <- result$profiles[["GenomePerspective"]][["o1"]]
+      expect_false(is.null(combined))
+      expect_equal(colnames(combined), "ID32")
+    }
+  )
 })
 
-test_that(".decode_perspective_profiles: non-integer-coercible cloneID produces warning and skips pair", {
-  df <- .persp_row_full(clone_id = NA_integer_, origin = "o1", size = 1)
-  df$cloneID <- "not_a_number"
-  result <- .decode_profiles(df)
-  expect_equal(result$profiles, list())
-  expect_equal(length(result$warnings), 1L)
-  expect_match(result$warnings[1], "cloneID")
+test_that(".decode_perspective_profiles: all per-node errors leave pair absent from profiles", {
+  # Three-node tree; all getSubProfiles calls fail.
+  df <- rbind(
+    .persp_row_full(clone_id = 40L, origin = "o1"),
+    .persp_row_full(clone_id = 41L, origin = "o1", parent = 40L),
+    .persp_row_full(clone_id = 42L, origin = "o1", parent = 41L)
+  )
+  with_mocked_bindings(
+    getSubProfiles = function(...) stop("always fails"),
+    .package = "cloneid",
+    code = {
+      result <- .decode_profiles(df)
+      expect_equal(length(result$warnings), 2L)   # one per internal node
+      expect_null(result$profiles[["GenomePerspective"]])
+    }
+  )
 })
 
 test_that(".decode_perspective_profiles: getSubProfiles error records warning but preserves other pairs", {
+  # Two origins; each has one internal node.  o1's node fails, o2's succeeds.
   df <- rbind(
     .persp_row_full(clone_id = 1L, origin = "o1",
-                     which_p = "GenomePerspective", size = 1),
+                     which_p = "GenomePerspective"),
+    .persp_row_full(clone_id = 3L, origin = "o1",
+                     which_p = "GenomePerspective", parent = 1L),
     .persp_row_full(clone_id = 2L, origin = "o2",
-                     which_p = "GenomePerspective", size = 1)
+                     which_p = "GenomePerspective"),
+    .persp_row_full(clone_id = 4L, origin = "o2",
+                     which_p = "GenomePerspective", parent = 2L)
   )
   expected_mat <- .mock_profile_matrix()
   with_mocked_bindings(
@@ -1449,9 +1510,13 @@ test_that("format='rds': tables$Perspective is unchanged by decoding", {
 })
 
 test_that("format='rds' with Perspective rows: decoded populated; getSubProfiles result stored correctly", {
-  # Build a mock that returns one Perspective row with size=1.
-  persp_df <- .persp_row_full(clone_id = 7L, origin = "o1",
-                               which_p = "GenomePerspective", size = 1)
+  # Two-node tree: root(7) -> child(8).  internal_ids = {7L}.
+  persp_df <- rbind(
+    .persp_row_full(clone_id = 7L, origin = "o1",
+                     which_p = "GenomePerspective"),
+    .persp_row_full(clone_id = 8L, origin = "o1",
+                     which_p = "GenomePerspective", parent = 7L)
+  )
   loci_df  <- data.frame()
 
   mock <- function(stmt, conn = NULL) {
@@ -1487,8 +1552,8 @@ test_that("format='rds' with Perspective rows: decoded populated; getSubProfiles
           expect_false(is.null(result$decoded[["GenomePerspective"]]))
           expect_equal(result$decoded[["GenomePerspective"]][["o1"]], expected_mat)
           expect_equal(result$metadata$decode_warnings, character(0))
-          # Raw Perspective table still intact
-          expect_equal(nrow(result$tables$Perspective), 1L)
+          # Raw Perspective table still intact (two rows: root + child)
+          expect_equal(nrow(result$tables$Perspective), 2L)
         }
       )
     }
@@ -1496,8 +1561,13 @@ test_that("format='rds' with Perspective rows: decoded populated; getSubProfiles
 })
 
 test_that("format='rds': getSubProfiles error is recorded in decode_warnings, export still completes", {
-  persp_df <- .persp_row_full(clone_id = 5L, origin = "o1",
-                               which_p = "GenomePerspective", size = 1)
+  # Two-node tree: root(5) -> child(6).  internal_ids = {5L}.
+  persp_df <- rbind(
+    .persp_row_full(clone_id = 5L, origin = "o1",
+                     which_p = "GenomePerspective"),
+    .persp_row_full(clone_id = 6L, origin = "o1",
+                     which_p = "GenomePerspective", parent = 5L)
+  )
   mock <- function(stmt, conn = NULL) {
     if (grepl("WHERE id =",              stmt)) return(data.frame(id = "1", stringsAsFactors = FALSE))
     if (grepl("passaged_from_id1 =",    stmt)) return(data.frame(id = character(0), stringsAsFactors = FALSE))
@@ -1535,11 +1605,16 @@ test_that("format='rds': getSubProfiles error is recorded in decode_warnings, ex
 })
 
 test_that(".decode_perspective_profiles: two perspective types decoded independently", {
+  # Each perspective type has its own two-node tree (root -> child).
   df <- rbind(
     .persp_row_full(clone_id = 1L, origin = "o1",
-                     which_p = "GenomePerspective",       size = 1),
+                     which_p = "GenomePerspective"),
+    .persp_row_full(clone_id = 3L, origin = "o1",
+                     which_p = "GenomePerspective",       parent = 1L),
     .persp_row_full(clone_id = 2L, origin = "o1",
-                     which_p = "TranscriptomePerspective", size = 1)
+                     which_p = "TranscriptomePerspective"),
+    .persp_row_full(clone_id = 4L, origin = "o1",
+                     which_p = "TranscriptomePerspective", parent = 2L)
   )
   mat_g <- .mock_profile_matrix()
   mat_t <- .mock_profile_matrix() * 2

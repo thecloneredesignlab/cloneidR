@@ -1746,20 +1746,23 @@ pedigree_dist <- function(conn, ids, cellLine) {
 #' Decode molecular profiles for exported Perspective rows.
 #'
 #' For each unique (whichPerspective, origin) pair in \code{perspectives_df},
-#' identifies the root clone (the single row where \code{size == 1}), then
-#' calls \code{getSubProfiles()} to retrieve the fully decoded numeric profile
-#' matrix for that clone and all its subclones.
+#' identifies every internal node in the exported clone tree (rows whose
+#' \code{cloneID} appears as the \code{parent} of at least one other row),
+#' then calls \code{getSubProfiles()} for each internal node and column-binds
+#' the results into a single matrix covering all non-root clones in the tree.
 #'
 #' The decoded matrices are accumulated in a two-level named list:
 #' \preformatted{
 #'   profiles$<whichPerspective>$<origin> = numeric matrix
 #'     rows    = genomic loci (chr:start-end strings)
-#'     columns = clone identifiers
+#'     columns = clone identifiers (all non-root clones in the exported tree)
 #'     values  = modality-specific numeric values (e.g. copy number, expression)
 #' }
 #'
 #' @param perspectives_df  Data frame of Perspective rows as returned by
-#'   \code{.fetch_perspective_closure()$perspectives}.  May be zero-row.
+#'   \code{.fetch_perspective_closure()$perspectives}.  Must include a
+#'   \code{parent} column (present in all exports produced by this package).
+#'   May be zero-row.
 #'
 #' @return Named list with two elements:
 #' \describe{
@@ -1770,17 +1773,14 @@ pedigree_dist <- function(conn, ids, cellLine) {
 #'     when all decodes succeed.}
 #' }
 #'
-#' @section v1 root-clone assumption:
-#' The root clone for each (origin, whichPerspective) pair is assumed to be
-#' the unique row where \code{size == 1}.  Three edge cases are handled
-#' explicitly and recorded in \code{warnings} rather than stopping:
-#' \itemize{
-#'   \item No row with \code{size == 1} found — pair is skipped.
-#'   \item More than one row with \code{size == 1} found — pair is skipped.
-#'   \item \code{cloneID} is \code{NA} or cannot be coerced to integer — skipped.
-#' }
-#' Partial success is preserved: a failure for one pair does not prevent
-#' decoding of the remaining pairs.
+#' @section Full-tree traversal (v2):
+#' \code{getSubProfiles(cloneID)} returns only the direct children of the
+#' specified clone (one level deep).  To decode the entire nested clone tree,
+#' this function identifies all internal nodes from the exported Perspective
+#' rows and calls \code{getSubProfiles} once per internal node.  The per-node
+#' results are column-bound; duplicate columns (if any) are removed.
+#' Partial failure on a single node is recorded in \code{warnings} but does
+#' not abort decoding of the remaining nodes or pairs.
 #'
 #' @section Connection note:
 #' This helper calls \code{getSubProfiles()}, which dispatches to Java's
@@ -1798,7 +1798,8 @@ pedigree_dist <- function(conn, ids, cellLine) {
   }
 
   # Guard: required columns must be present.
-  required_cols <- c("whichPerspective", "origin", "cloneID", "size")
+  # 'parent' is needed to identify internal nodes; 'size' is no longer required.
+  required_cols <- c("whichPerspective", "origin", "cloneID", "parent")
   missing_cols  <- setdiff(required_cols, colnames(perspectives_df))
   if (length(missing_cols) > 0L) {
     warn <- c(warn, paste0(
@@ -1826,53 +1827,50 @@ pedigree_dist <- function(conn, ids, cellLine) {
       drop = FALSE
     ]
 
-    # v1 assumption: root clone is the unique row where size == 1.
-    root_rows <- sub[!is.na(sub$size) & sub$size == 1, , drop = FALSE]
+    # v2: identify all internal nodes — cloneIDs that appear as 'parent' of at
+    # least one other row in this (origin, whichPerspective) slice.
+    # Calling getSubProfiles() for every internal node and combining the results
+    # gives profiles for all non-root clones in the exported tree, not just the
+    # root's direct children (which is what a single root-only call would return).
+    parent_ids   <- unique(sub$parent[!is.na(sub$parent)])
+    internal_ids <- intersect(as.integer(sub$cloneID), as.integer(parent_ids))
 
-    if (nrow(root_rows) == 0L) {
+    if (length(internal_ids) == 0L) {
       warn <- c(warn, paste0(
-        key, " skipped: no row with size==1 found ",
-        "(v1 requires exactly one root clone per origin/perspective)."
+        key, " skipped: no internal nodes found in exported Perspective rows ",
+        "(all rows may be leaves, or the 'parent' column may be all NA)."
       ))
       next
     }
 
-    if (nrow(root_rows) > 1L) {
-      warn <- c(warn, paste0(
-        key, " skipped: ", nrow(root_rows), " rows with size==1 found ",
-        "(v1 requires exactly one root clone per origin/perspective)."
-      ))
-      next
-    }
-
-    clone_id     <- root_rows$cloneID[1L]
-    clone_id_int <- suppressWarnings(as.integer(clone_id))
-
-    if (is.na(clone_id_int)) {
-      warn <- c(warn, paste0(
-        key, " skipped: cloneID '", clone_id, "' is NA or cannot be coerced ",
-        "to integer."
-      ))
-      next
-    }
-
-    # Decode via existing Java-mediated path.  Errors are caught so that a
-    # failure on one pair does not abort decoding of the remaining pairs.
-    mat <- tryCatch(
-      getSubProfiles(cloneID_or_sampleName = clone_id_int,
-                     whichP               = persp_type),
-      error = function(e) {
-        warn <<- c(warn, paste0(
-          key, " getSubProfiles() error: ", conditionMessage(e)
-        ))
-        NULL
+    # Call getSubProfiles for each internal node to collect its children's
+    # profiles.  Errors on individual nodes are captured without aborting the
+    # remaining nodes or pairs.
+    profile_parts <- list()
+    for (cid in internal_ids) {
+      mat <- tryCatch(
+        getSubProfiles(cloneID_or_sampleName = cid, whichP = persp_type),
+        error = function(e) {
+          warn <<- c(warn, paste0(
+            key, " getSubProfiles(", cid, ") error: ", conditionMessage(e)
+          ))
+          NULL
+        }
+      )
+      if (!is.null(mat) && !is.null(ncol(mat)) && ncol(mat) > 0L) {
+        profile_parts[[length(profile_parts) + 1L]] <- mat
       }
-    )
+    }
 
-    if (is.null(mat)) next
+    if (length(profile_parts) == 0L) next
+
+    combined <- do.call(cbind, profile_parts)
+    # Remove duplicate columns — same clone can appear as child of multiple
+    # nodes in degenerate trees; keep the first occurrence.
+    combined <- combined[, !duplicated(colnames(combined)), drop = FALSE]
 
     if (is.null(profiles[[persp_type]])) profiles[[persp_type]] <- list()
-    profiles[[persp_type]][[origin]] <- mat
+    profiles[[persp_type]][[origin]] <- combined
   }
 
   list(profiles = profiles, warnings = warn)
