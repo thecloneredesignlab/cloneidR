@@ -2035,7 +2035,7 @@ pedigree_dist <- function(conn, ids, cellLine) {
 #' FK-safe INSERT order (relevant for format = "sql"):
 #'   CellLinesAndPatients -> MediaIngredients -> Media -> Flask ->
 #'   Loci -> Passaging -> Perspective ->
-#'   LiquidNitrogen -> Minus80Freezer -> Crypgene_LiquidNitrogenBackup
+#'   LiquidNitrogen -> Minus80Freezer
 #'
 #' V1 policy for Perspective.parent and Perspective.rootID:
 #'   Both columns are plain int DEFAULT NULL with no FK constraint in the schema
@@ -2051,8 +2051,7 @@ pedigree_dist <- function(conn, ids, cellLine) {
 #' @param format                One of "rds" (default) or "sql".
 #' @param recursive             Logical. FALSE (default) = root + direct children.
 #'                              TRUE = full descendant closure.
-#' @param include_storage       Logical. Include LiquidNitrogen, Minus80Freezer,
-#'                              Crypgene_LiquidNitrogenBackup rows.
+#' @param include_storage       Logical. Include LiquidNitrogen and Minus80Freezer rows.
 #' @param include_perspectives  Logical. Include Perspective and Loci rows.
 #' @param decode_profiles       Logical or NULL. NULL (default) = auto: TRUE when
 #'                              format="rds", FALSE when format="sql". Controls
@@ -2163,8 +2162,7 @@ export_passaging_subtree_bundle <- function(
     storage <- .fetch_storage_rows(export_ids, conn = conn)
   } else {
     storage <- list(liquid_nitrogen = data.frame(),
-                    minus80_freezer = data.frame(),
-                    crypgene_backup = data.frame())
+                    minus80_freezer = data.frame())
   }
 
   # -------------------------------------------------------------------------
@@ -2210,8 +2208,7 @@ export_passaging_subtree_bundle <- function(
       Passaging                     = passaging_rows,
       Perspective                   = persp$perspectives,
       LiquidNitrogen                = storage$liquid_nitrogen,
-      Minus80Freezer                = storage$minus80_freezer,
-      Crypgene_LiquidNitrogenBackup = storage$crypgene_backup
+      Minus80Freezer                = storage$minus80_freezer
     ),
     decoded    = decoded,
     sql        = NULL,
@@ -2233,11 +2230,10 @@ export_passaging_subtree_bundle <- function(
                                   blob_cols = "profile")
     ln_stmts  <- .rows_to_inserts("LiquidNitrogen",                storage$liquid_nitrogen, conn)
     m8_stmts  <- .rows_to_inserts("Minus80Freezer",                storage$minus80_freezer, conn)
-    cg_stmts  <- .rows_to_inserts("Crypgene_LiquidNitrogenBackup", storage$crypgene_backup, conn)
 
     insert_stmts <- c(cl_stmts, mi_stmts, med_stmts, fl_stmts,
                       lo_stmts, pa_stmts, pe_stmts,
-                      ln_stmts, m8_stmts, cg_stmts)
+                      ln_stmts, m8_stmts)
 
     bundle$statements <- c("START TRANSACTION;", insert_stmts, "COMMIT;")
 
@@ -2277,8 +2273,7 @@ export_passaging_subtree_bundle <- function(
       .section("Passaging",                     pa_stmts),
       .section("Perspective",                   pe_stmts),
       .section("LiquidNitrogen",                ln_stmts),
-      .section("Minus80Freezer",                m8_stmts),
-      .section("Crypgene_LiquidNitrogenBackup", cg_stmts)
+      .section("Minus80Freezer",                m8_stmts)
     )
 
     bundle$sql <- paste(c(header, "", "START TRANSACTION;",
