@@ -2051,19 +2051,23 @@ pedigree_dist <- function(conn, ids, cellLine) {
 #'                              TRUE = full descendant closure.
 #' @param include_storage       Logical. Include LiquidNitrogen and Minus80Freezer rows.
 #' @param include_perspectives  Logical. Include Perspective and Loci rows.
-#' @param decode_profiles       Logical or NULL. NULL (default) = auto: TRUE when
-#'                              format="rds", FALSE when format="sql". Controls
-#'                              whether \code{.decode_perspective_profiles()} is
-#'                              called and the result stored in \code{bundle$decoded}.
+#' @param decode_profiles_recursive  Logical. FALSE (default) = shallow decode:
+#'                              \code{.decode_perspective_profiles()} is called and
+#'                              its result stored in \code{bundle$decoded}, using the
+#'                              current one-level-per-internal-node traversal.
+#'                              TRUE = full recursive decode (not yet implemented;
+#'                              will stop with an informative error).
 #'                              Decoding depends on the active Java/CLONEID runtime,
 #'                              not the RMySQL connection. Partial decode failures
 #'                              are recorded in \code{metadata$decode_warnings} and
-#'                              do not abort the export.
+#'                              do not abort the export. Decoding only runs when
+#'                              \code{format="rds"}; it is silently skipped for
+#'                              \code{format="sql"}.
 #' @param conn                  Open DBI/RMySQL connection, or NULL to open one.
 #' @param external_parent_policy One of "nullify" (default), "include", "error".
 #' @return Named list with fields present for both formats:
 #'   metadata             — list: root_id, format, recursive, include_storage,
-#'                          include_perspectives, decode_profiles,
+#'                          include_perspectives, decode_profiles_recursive,
 #'                          external_parent_policy, exported_at, package_version,
 #'                          decode_warnings (character vector; empty if none).
 #'   export_ids           — character vector of exported Passaging.id values
@@ -2073,8 +2077,8 @@ pedigree_dist <- function(conn, ids, cellLine) {
 #'   tables               — named list of data frames (actual rows, not counts),
 #'                          in FK-safe order.  DB-faithful; never mutated by decoding.
 #'   decoded              — two-level named list profiles$<whichPerspective>$<origin>
-#'                          = numeric matrix (format="rds" and decode_profiles=TRUE),
-#'                          or NULL.
+#'                          = numeric matrix (format="rds"; shallow decode by default),
+#'                          or NULL (format="sql").
 #'   sql                  — complete SQL dump string (format="sql") or NULL.
 #'   statements           — character vector: "START TRANSACTION;", INSERTs,
 #'                          "COMMIT;" (format="sql") or NULL.
@@ -2085,16 +2089,14 @@ export_passaging_subtree_bundle <- function(
     recursive              = FALSE,
     include_storage        = TRUE,
     include_perspectives   = TRUE,
-    decode_profiles        = NULL,
+    decode_profiles_recursive = FALSE,
     conn                   = NULL,
     external_parent_policy = c("nullify", "include", "error")) {
 
   format                 <- match.arg(format)
   external_parent_policy <- match.arg(external_parent_policy)
 
-  # Resolve decode_profiles: NULL means auto (TRUE for rds, FALSE for sql).
-  if (is.null(decode_profiles)) decode_profiles <- (format == "rds")
-  decode_profiles <- isTRUE(decode_profiles)
+  decode_profiles_recursive <- isTRUE(decode_profiles_recursive)
 
   # Connection lifecycle: open a fresh connection if none supplied, and ensure
   # it is closed on exit only if we opened it (caller-supplied connections are
@@ -2164,13 +2166,25 @@ export_passaging_subtree_bundle <- function(
   }
 
   # -------------------------------------------------------------------------
-  # 7. Decode molecular profiles (rds format + decode_profiles=TRUE only).
+  # 7. Decode molecular profiles (rds format only).
+  # Shallow decode runs by default (decode_profiles_recursive=FALSE).
+  # Recursive decode is not yet implemented (decode_profiles_recursive=TRUE
+  # will stop with an informative error before reaching here).
   # Raw tables in `persp` are never mutated. Partial failures are captured in
   # decode_warnings and do not abort the export.
   # -------------------------------------------------------------------------
   decoded         <- NULL
   decode_warnings <- character(0)
-  if (decode_profiles) {
+  if (format == "rds") {
+    if (decode_profiles_recursive) {
+      stop(
+        "decode_profiles_recursive=TRUE is not yet implemented. ",
+        "The default shallow decode (decode_profiles_recursive=FALSE) ",
+        "decodes all internal nodes present in the exported Perspective table. ",
+        "Full recursive decoding of nodes not present in the export is a planned ",
+        "future feature. See docs/specs/subtree_download/implementation_plan.md §D.7."
+      )
+    }
     decoded_result  <- .decode_perspective_profiles(persp$perspectives)
     decoded         <- decoded_result$profiles
     decode_warnings <- decoded_result$warnings
@@ -2189,7 +2203,7 @@ export_passaging_subtree_bundle <- function(
       recursive              = recursive,
       include_storage        = include_storage,
       include_perspectives   = include_perspectives,
-      decode_profiles        = decode_profiles,
+      decode_profiles_recursive = decode_profiles_recursive,
       external_parent_policy = external_parent_policy,
       exported_at            = Sys.time(),
       package_version        = pkg_ver,

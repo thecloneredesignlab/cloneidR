@@ -1374,16 +1374,21 @@ test_that(".decode_perspective_profiles: getSubProfiles error records warning bu
 })
 
 # ---------------------------------------------------------------------------
-# export_passaging_subtree_bundle — decode_profiles wiring (Step 2)
+# export_passaging_subtree_bundle — decode_profiles_recursive wiring
 # ---------------------------------------------------------------------------
 #
 # getSubProfiles is mocked so no Java runtime or live DB is needed.
 # The .make_full_mock() produces an empty Perspective table (no rows), so
 # decoded is present but empty (list()) by default.  Tests that require
 # Perspective rows use a bespoke mock.
+#
+# New semantics (replaces old decode_profiles param):
+#   - format="rds" always runs shallow decode (decode_profiles_recursive=FALSE by default)
+#   - format="sql" never decodes (decoded is NULL)
+#   - decode_profiles_recursive=TRUE stops with an informative error (not yet implemented)
 # ---------------------------------------------------------------------------
 
-test_that("format='rds': bundle has 'decoded' slot (NULL auto resolves to TRUE)", {
+test_that("format='rds': bundle has 'decoded' slot (shallow decode by default)", {
   mock <- .make_full_mock()
   with_mocked_bindings(
     .db_fetch = mock,
@@ -1415,7 +1420,7 @@ test_that("format='sql': decoded is NULL and sql mode is unchanged", {
   )
 })
 
-test_that("format='rds': metadata contains decode_profiles=TRUE and decode_warnings", {
+test_that("format='rds': metadata contains decode_profiles_recursive=FALSE and decode_warnings", {
   mock <- .make_full_mock()
   with_mocked_bindings(
     .db_fetch = mock,
@@ -1426,15 +1431,15 @@ test_that("format='rds': metadata contains decode_profiles=TRUE and decode_warni
         include_storage = FALSE, include_perspectives = FALSE
       )
       meta <- result$metadata
-      expect_true("decode_profiles"  %in% names(meta))
-      expect_true("decode_warnings"  %in% names(meta))
-      expect_true(meta$decode_profiles)
+      expect_true("decode_profiles_recursive" %in% names(meta))
+      expect_true("decode_warnings"           %in% names(meta))
+      expect_false(meta$decode_profiles_recursive)   # default is shallow (FALSE)
       expect_true(is.character(meta$decode_warnings))
     }
   )
 })
 
-test_that("format='sql': metadata contains decode_profiles=FALSE", {
+test_that("format='sql': metadata contains decode_profiles_recursive=FALSE", {
   mock <- .make_full_mock()
   with_mocked_bindings(
     .db_fetch = mock,
@@ -1444,67 +1449,48 @@ test_that("format='sql': metadata contains decode_profiles=FALSE", {
         id     = "1", format = "sql", conn = mc,
         include_storage = FALSE, include_perspectives = FALSE
       )
-      expect_false(result$metadata$decode_profiles)
+      expect_false(result$metadata$decode_profiles_recursive)
     }
   )
 })
 
-test_that("decode_profiles=FALSE overrides auto-TRUE for format='rds'", {
+test_that("decode_profiles_recursive=TRUE stops with not-yet-implemented error", {
   mock <- .make_full_mock()
   with_mocked_bindings(
     .db_fetch = mock,
     .package  = "cloneid",
     code = {
-      result <- export_passaging_subtree_bundle(
-        id = "1", format = "rds", conn = mc,
-        decode_profiles = FALSE,
-        include_storage = FALSE, include_perspectives = FALSE
+      expect_error(
+        export_passaging_subtree_bundle(
+          id = "1", format = "rds", conn = mc,
+          decode_profiles_recursive = TRUE,
+          include_storage = FALSE, include_perspectives = FALSE
+        ),
+        regexp = "not yet implemented"
       )
-      expect_null(result$decoded)
-      expect_false(result$metadata$decode_profiles)
-    }
-  )
-})
-
-test_that("decode_profiles=TRUE overrides auto-FALSE for format='sql'", {
-  mock <- .make_full_mock()
-  with_mocked_bindings(
-    .db_fetch = mock,
-    .package  = "cloneid",
-    code = {
-      result <- export_passaging_subtree_bundle(
-        id = "1", format = "sql", conn = mc,
-        decode_profiles = TRUE,
-        include_storage = FALSE, include_perspectives = FALSE
-      )
-      # decoded is present (a list, possibly empty since no perspective rows)
-      expect_false(is.null(result$decoded))
-      expect_true(is.list(result$decoded))
-      expect_true(result$metadata$decode_profiles)
     }
   )
 })
 
 test_that("format='rds': tables$Perspective is unchanged by decoding", {
   # Perspective table should be the raw DB-faithful data frame regardless of decoding.
+  # With new API both calls use shallow decode (decode_profiles_recursive=FALSE).
   mock <- .make_full_mock()
   with_mocked_bindings(
     .db_fetch = mock,
     .package  = "cloneid",
     code = {
-      r_no_decode <- export_passaging_subtree_bundle(
+      r1 <- export_passaging_subtree_bundle(
         id = "1", format = "rds", conn = mc,
-        decode_profiles = FALSE,
         include_storage = FALSE, include_perspectives = FALSE
       )
-      r_decode <- export_passaging_subtree_bundle(
+      r2 <- export_passaging_subtree_bundle(
         id = "1", format = "rds", conn = mc,
-        decode_profiles = TRUE,
+        decode_profiles_recursive = FALSE,
         include_storage = FALSE, include_perspectives = FALSE
       )
-      # Raw table must be identical whether decoding ran or not.
-      expect_equal(r_no_decode$tables$Perspective,
-                   r_decode$tables$Perspective)
+      # Raw table must be identical in both calls.
+      expect_equal(r1$tables$Perspective, r2$tables$Perspective)
     }
   )
 })
