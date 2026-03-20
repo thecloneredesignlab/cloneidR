@@ -409,7 +409,7 @@ test_that("policy='include': referenced parent not in DB triggers stop()", {
       return(data.frame(cloneID = integer(0), origin = character(0),
                         profile_loci = integer(0), stringsAsFactors = FALSE))
     # ── storage ─────────────────────────────────────────────────────────────
-    if (grepl("LiquidNitrogen|Minus80Freezer|Crypgene", stmt))
+    if (grepl("LiquidNitrogen|Minus80Freezer", stmt))
       return(data.frame())
     stop("Unexpected query in full mock: ", stmt)
   }
@@ -540,12 +540,10 @@ test_that("include_storage=FALSE: no storage-table inserts in statements", {
         include_storage      = FALSE
       )
       stmts_str <- paste(result$statements, collapse = "\n")
-      expect_false(grepl("LiquidNitrogen",                stmts_str))
-      expect_false(grepl("Minus80Freezer",                stmts_str))
-      expect_false(grepl("Crypgene_LiquidNitrogenBackup", stmts_str))
-      expect_equal(nrow(result$tables$LiquidNitrogen),                0L)
-      expect_equal(nrow(result$tables$Minus80Freezer),                0L)
-      expect_equal(nrow(result$tables$Crypgene_LiquidNitrogenBackup), 0L)
+      expect_false(grepl("LiquidNitrogen", stmts_str))
+      expect_false(grepl("Minus80Freezer", stmts_str))
+      expect_equal(nrow(result$tables$LiquidNitrogen), 0L)
+      expect_equal(nrow(result$tables$Minus80Freezer), 0L)
     }
   )
 })
@@ -957,13 +955,8 @@ test_that(".fetch_perspective_closure: empty export_ids returns empty perspectiv
   data.frame(id = as.character(id), Drawer = "D1", Position = "1",
              BoxRow = "1", BoxColumn = "1", stringsAsFactors = FALSE)
 }
-.cryo_row <- function(id) {
-  data.frame(id = as.character(id), stringsAsFactors = FALSE)
-}
-
 test_that(".fetch_storage_rows: LiquidNitrogen rows for export_ids are returned", {
   mock <- function(stmt, conn = NULL) {
-    if (grepl("Crypgene",       stmt)) return(.empty_df)
     if (grepl("LiquidNitrogen", stmt)) return(.ln_row("1"))
     if (grepl("Minus80Freezer", stmt)) return(.empty_df)
     stop("Unexpected: ", stmt)
@@ -976,14 +969,12 @@ test_that(".fetch_storage_rows: LiquidNitrogen rows for export_ids are returned"
       expect_equal(nrow(result$liquid_nitrogen), 1L)
       expect_equal(result$liquid_nitrogen$id,    "1")
       expect_equal(nrow(result$minus80_freezer), 0L)
-      expect_equal(nrow(result$crypgene_backup), 0L)
     }
   )
 })
 
 test_that(".fetch_storage_rows: Minus80Freezer rows for export_ids are returned", {
   mock <- function(stmt, conn = NULL) {
-    if (grepl("Crypgene",       stmt)) return(.empty_df)
     if (grepl("LiquidNitrogen", stmt)) return(.empty_df)
     if (grepl("Minus80Freezer", stmt)) return(.m80_row("2"))
     stop("Unexpected: ", stmt)
@@ -999,24 +990,6 @@ test_that(".fetch_storage_rows: Minus80Freezer rows for export_ids are returned"
   )
 })
 
-test_that(".fetch_storage_rows: Crypgene_LiquidNitrogenBackup rows for export_ids are returned", {
-  mock <- function(stmt, conn = NULL) {
-    if (grepl("Crypgene",       stmt)) return(.cryo_row("3"))
-    if (grepl("LiquidNitrogen", stmt)) return(.empty_df)
-    if (grepl("Minus80Freezer", stmt)) return(.empty_df)
-    stop("Unexpected: ", stmt)
-  }
-  with_mocked_bindings(
-    .db_fetch = mock,
-    .package  = "cloneid",
-    code = {
-      result <- .storage_rows("3", conn = mc)
-      expect_equal(nrow(result$crypgene_backup), 1L)
-      expect_equal(result$crypgene_backup$id,    "3")
-    }
-  )
-})
-
 test_that(".fetch_storage_rows: SQL IN clause contains only the supplied export_ids", {
   # Verify the queries target exactly the supplied ids — this is the mechanism
   # that excludes storage rows belonging to unrelated passaging ids.
@@ -1026,7 +999,6 @@ test_that(".fetch_storage_rows: SQL IN clause contains only the supplied export_
     captured_stmts <<- c(captured_stmts, stmt)
     if (grepl("LiquidNitrogen", stmt)) return(.empty_df)
     if (grepl("Minus80Freezer", stmt)) return(.empty_df)
-    if (grepl("Crypgene",       stmt)) return(.empty_df)
     stop("Unexpected: ", stmt)
   }
   with_mocked_bindings(
@@ -1058,7 +1030,6 @@ test_that(".fetch_storage_rows: empty export_ids returns all three tables empty"
       result <- .storage_rows(character(0), conn = mc)
       expect_equal(nrow(result$liquid_nitrogen), 0L)
       expect_equal(nrow(result$minus80_freezer), 0L)
-      expect_equal(nrow(result$crypgene_backup), 0L)
     }
   )
 })
@@ -1491,7 +1462,7 @@ test_that("format='rds' with Perspective rows: decoded populated; getSubProfiles
       return(data.frame())
     if (grepl("Perspective.*WHERE.*origin.*IN", stmt)) return(persp_df)
     if (grepl("Loci",                    stmt)) return(loci_df)
-    if (grepl("LiquidNitrogen|Minus80Freezer|Crypgene", stmt)) return(data.frame())
+    if (grepl("LiquidNitrogen|Minus80Freezer", stmt)) return(data.frame())
     stop("Unexpected query in decode-test mock: ", stmt)
   }
 
@@ -1535,7 +1506,7 @@ test_that("format='rds': getSubProfiles error is recorded in decode_warnings, ex
       return(data.frame())
     if (grepl("Perspective.*WHERE.*origin.*IN", stmt)) return(persp_df)
     if (grepl("Loci",                    stmt)) return(data.frame())
-    if (grepl("LiquidNitrogen|Minus80Freezer|Crypgene", stmt)) return(data.frame())
+    if (grepl("LiquidNitrogen|Minus80Freezer", stmt)) return(data.frame())
     stop("Unexpected: ", stmt)
   }
   with_mocked_bindings(
