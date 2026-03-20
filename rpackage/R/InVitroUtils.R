@@ -1755,6 +1755,142 @@ pedigree_dist <- function(conn, ids, cellLine) {
 }
 
 
+#' Decode molecular profiles for exported Perspective rows.
+#'
+#' For each unique (whichPerspective, origin) pair in \code{perspectives_df},
+#' identifies the root clone (the single row where \code{size == 1}), then
+#' calls \code{getSubProfiles()} to retrieve the fully decoded numeric profile
+#' matrix for that clone and all its subclones.
+#'
+#' The decoded matrices are accumulated in a two-level named list:
+#' \preformatted{
+#'   profiles$<whichPerspective>$<origin> = numeric matrix
+#'     rows    = genomic loci (chr:start-end strings)
+#'     columns = clone identifiers
+#'     values  = modality-specific numeric values (e.g. copy number, expression)
+#' }
+#'
+#' @param perspectives_df  Data frame of Perspective rows as returned by
+#'   \code{.fetch_perspective_closure()$perspectives}.  May be zero-row.
+#'
+#' @return Named list with two elements:
+#' \describe{
+#'   \item{profiles}{Two-level named list as described above.  Empty list
+#'     (\code{list()}) when there are no perspective rows or all pairs fail.}
+#'   \item{warnings}{Character vector recording every skipped
+#'     (whichPerspective, origin) pair and its reason.  \code{character(0)}
+#'     when all decodes succeed.}
+#' }
+#'
+#' @section v1 root-clone assumption:
+#' The root clone for each (origin, whichPerspective) pair is assumed to be
+#' the unique row where \code{size == 1}.  Three edge cases are handled
+#' explicitly and recorded in \code{warnings} rather than stopping:
+#' \itemize{
+#'   \item No row with \code{size == 1} found — pair is skipped.
+#'   \item More than one row with \code{size == 1} found — pair is skipped.
+#'   \item \code{cloneID} is \code{NA} or cannot be coerced to integer — skipped.
+#' }
+#' Partial success is preserved: a failure for one pair does not prevent
+#' decoding of the remaining pairs.
+#'
+#' @section Connection note:
+#' This helper calls \code{getSubProfiles()}, which dispatches to Java's
+#' \code{cloneid.Manager} via rJava (\code{.jcall}).  It does \strong{not}
+#' accept or use an RMySQL connection object.  Decoding therefore depends on
+#' the active Java/CLONEID runtime environment being initialised (package
+#' \code{.onLoad}), not on any R-level \code{conn} argument.
+.decode_perspective_profiles <- function(perspectives_df) {
+  warn    <- character(0)
+  profiles <- list()
+
+  # Nothing to decode.
+  if (is.null(perspectives_df) || nrow(perspectives_df) == 0L) {
+    return(list(profiles = profiles, warnings = warn))
+  }
+
+  # Guard: required columns must be present.
+  required_cols <- c("whichPerspective", "origin", "cloneID", "size")
+  missing_cols  <- setdiff(required_cols, colnames(perspectives_df))
+  if (length(missing_cols) > 0L) {
+    warn <- c(warn, paste0(
+      "perspectives_df missing required column(s): ",
+      paste(missing_cols, collapse = ", "),
+      "; no profiles decoded."
+    ))
+    return(list(profiles = profiles, warnings = warn))
+  }
+
+  # Enumerate unique (whichPerspective, origin) pairs.
+  pairs <- unique(
+    perspectives_df[, c("whichPerspective", "origin"), drop = FALSE]
+  )
+
+  for (i in seq_len(nrow(pairs))) {
+    persp_type <- pairs$whichPerspective[i]
+    origin     <- pairs$origin[i]
+    key        <- paste0("[", persp_type, " / origin=", origin, "]")
+
+    sub <- perspectives_df[
+      perspectives_df$whichPerspective == persp_type &
+        perspectives_df$origin == origin,
+      ,
+      drop = FALSE
+    ]
+
+    # v1 assumption: root clone is the unique row where size == 1.
+    root_rows <- sub[!is.na(sub$size) & sub$size == 1, , drop = FALSE]
+
+    if (nrow(root_rows) == 0L) {
+      warn <- c(warn, paste0(
+        key, " skipped: no row with size==1 found ",
+        "(v1 requires exactly one root clone per origin/perspective)."
+      ))
+      next
+    }
+
+    if (nrow(root_rows) > 1L) {
+      warn <- c(warn, paste0(
+        key, " skipped: ", nrow(root_rows), " rows with size==1 found ",
+        "(v1 requires exactly one root clone per origin/perspective)."
+      ))
+      next
+    }
+
+    clone_id     <- root_rows$cloneID[1L]
+    clone_id_int <- suppressWarnings(as.integer(clone_id))
+
+    if (is.na(clone_id_int)) {
+      warn <- c(warn, paste0(
+        key, " skipped: cloneID '", clone_id, "' is NA or cannot be coerced ",
+        "to integer."
+      ))
+      next
+    }
+
+    # Decode via existing Java-mediated path.  Errors are caught so that a
+    # failure on one pair does not abort decoding of the remaining pairs.
+    mat <- tryCatch(
+      getSubProfiles(cloneID_or_sampleName = clone_id_int,
+                     whichP               = persp_type),
+      error = function(e) {
+        warn <<- c(warn, paste0(
+          key, " getSubProfiles() error: ", conditionMessage(e)
+        ))
+        NULL
+      }
+    )
+
+    if (is.null(mat)) next
+
+    if (is.null(profiles[[persp_type]])) profiles[[persp_type]] <- list()
+    profiles[[persp_type]][[origin]] <- mat
+  }
+
+  list(profiles = profiles, warnings = warn)
+}
+
+
 #' Apply the external parent reference policy to exported Passaging rows.
 #'
 #' Because Passaging.passaged_from_id1 and passaged_from_id2 are self-referencing
@@ -1893,10 +2029,11 @@ pedigree_dist <- function(conn, ids, cellLine) {
 }
 
 
-#' Export a partial SQL dump rooted at a single Passaging.id.
+#' Export a subtree bundle rooted at a single Passaging.id.
 #'
-#' Produces a self-contained, FK-safe, reloadable SQL dump of the in-vitro
-#' lineage subtree rooted at \code{id}, including all required dependency rows.
+#' Produces a self-contained, FK-safe bundle of the in-vitro lineage subtree
+#' rooted at \code{id}, including all required dependency rows.  The bundle is
+#' returned as an R list and optionally written to disk.
 #'
 #' Orchestration order (important for external_parent_policy = "include"):
 #'   1. Compute subtree ids via passaged_from_id1 traversal.
@@ -1907,7 +2044,7 @@ pedigree_dist <- function(conn, ids, cellLine) {
 #'   5. Fetch Perspective + Loci closure from the final expanded export_ids.
 #'   6. Fetch storage rows from the final expanded export_ids.
 #'
-#' FK-safe INSERT order:
+#' FK-safe INSERT order (relevant for format = "sql"):
 #'   CellLinesAndPatients -> MediaIngredients -> Media -> Flask ->
 #'   Loci -> Passaging -> Perspective ->
 #'   LiquidNitrogen -> Minus80Freezer -> Crypgene_LiquidNitrogenBackup
@@ -1920,35 +2057,59 @@ pedigree_dist <- function(conn, ids, cellLine) {
 #'   outside the exported slice; this is deliberate and safe in v1.
 #'
 #' @param id                    Character. Passaging.id of the subtree root.
-#' @param file                  Character path or NULL. If non-NULL the SQL is
-#'                              written to this file (in addition to returning it).
+#' @param file                  Character path or NULL. If non-NULL the bundle
+#'                              is written to this path: saveRDS() for "rds",
+#'                              writeLines() for "sql". Overwrites unconditionally.
+#' @param format                One of "rds" (default) or "sql".
 #' @param recursive             Logical. FALSE (default) = root + direct children.
 #'                              TRUE = full descendant closure.
 #' @param include_storage       Logical. Include LiquidNitrogen, Minus80Freezer,
 #'                              Crypgene_LiquidNitrogenBackup rows.
 #' @param include_perspectives  Logical. Include Perspective and Loci rows.
+#' @param decode_profiles       Logical or NULL. NULL (default) = auto: TRUE when
+#'                              format="rds", FALSE when format="sql". Controls
+#'                              whether \code{.decode_perspective_profiles()} is
+#'                              called and the result stored in \code{bundle$decoded}.
+#'                              Decoding depends on the active Java/CLONEID runtime,
+#'                              not the RMySQL connection. Partial decode failures
+#'                              are recorded in \code{metadata$decode_warnings} and
+#'                              do not abort the export.
 #' @param conn                  Open DBI/RMySQL connection, or NULL to open one.
 #' @param external_parent_policy One of "nullify" (default), "include", "error".
-#' @return Named list:
-#'   sql                  — single character string, the complete SQL dump.
-#'   statements           — character vector: "START TRANSACTION;", all INSERT
-#'                          statements in FK-safe order, "COMMIT;". Suitable for
-#'                          replaying into a clean schema in tests.
+#' @return Named list with fields present for both formats:
+#'   metadata             — list: root_id, format, recursive, include_storage,
+#'                          include_perspectives, decode_profiles,
+#'                          external_parent_policy, exported_at, package_version,
+#'                          decode_warnings (character vector; empty if none).
 #'   export_ids           — character vector of exported Passaging.id values
 #'                          (may be expanded by policy="include").
 #'   detached_parent_refs — data frame(passaging_id, field, original_value)
 #'                          listing every parent ref nullified (policy="nullify").
-#'   tables               — named list of row counts per exported table.
-export_passaging_subtree_sql <- function(
+#'   tables               — named list of data frames (actual rows, not counts),
+#'                          in FK-safe order.  DB-faithful; never mutated by decoding.
+#'   decoded              — two-level named list profiles$<whichPerspective>$<origin>
+#'                          = numeric matrix (format="rds" and decode_profiles=TRUE),
+#'                          or NULL.
+#'   sql                  — complete SQL dump string (format="sql") or NULL.
+#'   statements           — character vector: "START TRANSACTION;", INSERTs,
+#'                          "COMMIT;" (format="sql") or NULL.
+export_passaging_subtree_bundle <- function(
     id,
     file                   = NULL,
+    format                 = c("rds", "sql"),
     recursive              = FALSE,
     include_storage        = TRUE,
     include_perspectives   = TRUE,
+    decode_profiles        = NULL,
     conn                   = NULL,
     external_parent_policy = c("nullify", "include", "error")) {
 
+  format                 <- match.arg(format)
   external_parent_policy <- match.arg(external_parent_policy)
+
+  # Resolve decode_profiles: NULL means auto (TRUE for rds, FALSE for sql).
+  if (is.null(decode_profiles)) decode_profiles <- (format == "rds")
+  decode_profiles <- isTRUE(decode_profiles)
 
   # Connection lifecycle: open a fresh connection if none supplied, and ensure
   # it is closed on exit only if we opened it (caller-supplied connections are
@@ -2019,107 +2180,160 @@ export_passaging_subtree_sql <- function(
   }
 
   # -------------------------------------------------------------------------
-  # Build INSERT statements per table in FK-safe order.
-  # blob_cols must be specified for mediumblob columns:
-  #   Loci.content, Perspective.profile
+  # 7. Decode molecular profiles (rds format + decode_profiles=TRUE only).
+  # Raw tables in `persp` are never mutated. Partial failures are captured in
+  # decode_warnings and do not abort the export.
   # -------------------------------------------------------------------------
-  cl_stmts  <- .rows_to_inserts("CellLinesAndPatients",          deps$cell_lines,        conn)
-  mi_stmts  <- .rows_to_inserts("MediaIngredients",              deps$media_ingredients, conn)
-  med_stmts <- .rows_to_inserts("Media",                         deps$media,             conn)
-  fl_stmts  <- .rows_to_inserts("Flask",                         deps$flasks,            conn)
-  lo_stmts  <- .rows_to_inserts("Loci",                          persp$loci,             conn,
-                                blob_cols = "content")
-  pa_stmts  <- .rows_to_inserts("Passaging",                     passaging_rows,         conn)
-  pe_stmts  <- .rows_to_inserts("Perspective",                   persp$perspectives,     conn,
-                                blob_cols = "profile")
-  ln_stmts  <- .rows_to_inserts("LiquidNitrogen",                storage$liquid_nitrogen, conn)
-  m8_stmts  <- .rows_to_inserts("Minus80Freezer",                storage$minus80_freezer, conn)
-  cg_stmts  <- .rows_to_inserts("Crypgene_LiquidNitrogenBackup", storage$crypgene_backup, conn)
-
-  # Ordered INSERT-only vector — used for the `statements` return field and
-  # for replay in tests (no comments, just executable SQL).
-  insert_stmts <- c(cl_stmts, mi_stmts, med_stmts, fl_stmts,
-                    lo_stmts, pa_stmts, pe_stmts,
-                    ln_stmts, m8_stmts, cg_stmts)
-
-  # replay-ready statements vector: transaction wrapper + all inserts
-  statements <- c("START TRANSACTION;", insert_stmts, "COMMIT;")
-
-  # -------------------------------------------------------------------------
-  # Assemble formatted SQL dump with section headers
-  # -------------------------------------------------------------------------
-  .section <- function(label, stmts) {
-    if (length(stmts) == 0) return(character(0))
-    c(paste0("\n-- ", label), stmts)
+  decoded         <- NULL
+  decode_warnings <- character(0)
+  if (decode_profiles) {
+    decoded_result  <- .decode_perspective_profiles(persp$perspectives)
+    decoded         <- decoded_result$profiles
+    decode_warnings <- decoded_result$warnings
   }
 
-  detach_summary <- if (nrow(detached_parent_refs) > 0) {
-    paste(apply(detached_parent_refs, 1, function(r) {
-      paste0(r["passaging_id"], ".", r["field"], " (was: ", r["original_value"], ")")
-    }), collapse = "; ")
-  } else {
-    "none"
-  }
-
+  # -------------------------------------------------------------------------
+  # Assemble the core bundle (same for both formats).
+  # tables holds actual data frames in FK-safe order.
+  # -------------------------------------------------------------------------
   pkg_ver <- tryCatch(as.character(packageVersion("cloneid")), error = function(e) "unknown")
 
-  header <- paste(c(
-    "-- CLONEID subtree export",
-    paste0("-- root_id:                ", id),
-    paste0("-- recursive:              ", recursive),
-    paste0("-- include_storage:        ", include_storage),
-    paste0("-- include_perspectives:   ", include_perspectives),
-    paste0("-- external_parent_policy: ", external_parent_policy),
-    paste0("-- exported_at:            ", format(Sys.time(), "%Y-%m-%d %H:%M:%S")),
-    paste0("-- package_version:        ", pkg_ver),
-    paste0("-- exported_ids:           ", paste(sort(export_ids), collapse = ", ")),
-    paste0("-- detached_parent_refs:   ", detach_summary)
-  ), collapse = "\n")
-
-  sql_body <- c(
-    .section("CellLinesAndPatients",          cl_stmts),
-    .section("MediaIngredients",              mi_stmts),
-    .section("Media",                         med_stmts),
-    .section("Flask",                         fl_stmts),
-    .section("Loci",                          lo_stmts),
-    .section("Passaging",                     pa_stmts),
-    .section("Perspective",                   pe_stmts),
-    .section("LiquidNitrogen",                ln_stmts),
-    .section("Minus80Freezer",                m8_stmts),
-    .section("Crypgene_LiquidNitrogenBackup", cg_stmts)
+  bundle <- list(
+    metadata = list(
+      root_id                = id,
+      format                 = format,
+      recursive              = recursive,
+      include_storage        = include_storage,
+      include_perspectives   = include_perspectives,
+      decode_profiles        = decode_profiles,
+      external_parent_policy = external_parent_policy,
+      exported_at            = Sys.time(),
+      package_version        = pkg_ver,
+      decode_warnings        = decode_warnings
+    ),
+    export_ids           = export_ids,
+    detached_parent_refs = detached_parent_refs,
+    tables               = list(
+      CellLinesAndPatients          = deps$cell_lines,
+      MediaIngredients              = deps$media_ingredients,
+      Media                         = deps$media,
+      Flask                         = deps$flasks,
+      Loci                          = persp$loci,
+      Passaging                     = passaging_rows,
+      Perspective                   = persp$perspectives,
+      LiquidNitrogen                = storage$liquid_nitrogen,
+      Minus80Freezer                = storage$minus80_freezer,
+      Crypgene_LiquidNitrogenBackup = storage$crypgene_backup
+    ),
+    decoded    = decoded,
+    sql        = NULL,
+    statements = NULL
   )
 
-  sql <- paste(c(header, "", "START TRANSACTION;",
-                 sql_body,
-                 "", "COMMIT;"),
-               collapse = "\n")
+  # -------------------------------------------------------------------------
+  # SQL format: build INSERT statements and formatted dump; augment bundle.
+  # -------------------------------------------------------------------------
+  if (format == "sql") {
+    cl_stmts  <- .rows_to_inserts("CellLinesAndPatients",          deps$cell_lines,         conn)
+    mi_stmts  <- .rows_to_inserts("MediaIngredients",              deps$media_ingredients,  conn)
+    med_stmts <- .rows_to_inserts("Media",                         deps$media,              conn)
+    fl_stmts  <- .rows_to_inserts("Flask",                         deps$flasks,             conn)
+    lo_stmts  <- .rows_to_inserts("Loci",                          persp$loci,              conn,
+                                  blob_cols = "content")
+    pa_stmts  <- .rows_to_inserts("Passaging",                     passaging_rows,          conn)
+    pe_stmts  <- .rows_to_inserts("Perspective",                   persp$perspectives,      conn,
+                                  blob_cols = "profile")
+    ln_stmts  <- .rows_to_inserts("LiquidNitrogen",                storage$liquid_nitrogen, conn)
+    m8_stmts  <- .rows_to_inserts("Minus80Freezer",                storage$minus80_freezer, conn)
+    cg_stmts  <- .rows_to_inserts("Crypgene_LiquidNitrogenBackup", storage$crypgene_backup, conn)
+
+    insert_stmts <- c(cl_stmts, mi_stmts, med_stmts, fl_stmts,
+                      lo_stmts, pa_stmts, pe_stmts,
+                      ln_stmts, m8_stmts, cg_stmts)
+
+    bundle$statements <- c("START TRANSACTION;", insert_stmts, "COMMIT;")
+
+    .section <- function(label, stmts) {
+      if (length(stmts) == 0) return(character(0))
+      c(paste0("\n-- ", label), stmts)
+    }
+
+    detach_summary <- if (nrow(detached_parent_refs) > 0) {
+      paste(apply(detached_parent_refs, 1, function(r) {
+        paste0(r["passaging_id"], ".", r["field"], " (was: ", r["original_value"], ")")
+      }), collapse = "; ")
+    } else {
+      "none"
+    }
+
+    header <- paste(c(
+      "-- CLONEID subtree export",
+      paste0("-- root_id:                ", id),
+      paste0("-- format:                 ", format),
+      paste0("-- recursive:              ", recursive),
+      paste0("-- include_storage:        ", include_storage),
+      paste0("-- include_perspectives:   ", include_perspectives),
+      paste0("-- external_parent_policy: ", external_parent_policy),
+      paste0("-- exported_at:            ", format(Sys.time(), "%Y-%m-%d %H:%M:%S")),
+      paste0("-- package_version:        ", pkg_ver),
+      paste0("-- exported_ids:           ", paste(sort(export_ids), collapse = ", ")),
+      paste0("-- detached_parent_refs:   ", detach_summary)
+    ), collapse = "\n")
+
+    sql_body <- c(
+      .section("CellLinesAndPatients",          cl_stmts),
+      .section("MediaIngredients",              mi_stmts),
+      .section("Media",                         med_stmts),
+      .section("Flask",                         fl_stmts),
+      .section("Loci",                          lo_stmts),
+      .section("Passaging",                     pa_stmts),
+      .section("Perspective",                   pe_stmts),
+      .section("LiquidNitrogen",                ln_stmts),
+      .section("Minus80Freezer",                m8_stmts),
+      .section("Crypgene_LiquidNitrogenBackup", cg_stmts)
+    )
+
+    bundle$sql <- paste(c(header, "", "START TRANSACTION;",
+                          sql_body,
+                          "", "COMMIT;"),
+                        collapse = "\n")
+  }
 
   # -------------------------------------------------------------------------
   # Write to file if requested
   # -------------------------------------------------------------------------
   if (!is.null(file)) {
-    writeLines(sql, con = file)
+    if (format == "rds") saveRDS(bundle, file)
+    if (format == "sql") writeLines(bundle$sql, con = file)
   }
 
-  # -------------------------------------------------------------------------
-  # Return structured object
-  # -------------------------------------------------------------------------
-  list(
-    sql                  = sql,
-    statements           = statements,
-    export_ids           = export_ids,
-    detached_parent_refs = detached_parent_refs,
-    tables               = list(
-      CellLinesAndPatients          = nrow(deps$cell_lines),
-      MediaIngredients              = nrow(deps$media_ingredients),
-      Media                         = nrow(deps$media),
-      Flask                         = nrow(deps$flasks),
-      Loci                          = nrow(persp$loci),
-      Passaging                     = nrow(passaging_rows),
-      Perspective                   = nrow(persp$perspectives),
-      LiquidNitrogen                = nrow(storage$liquid_nitrogen),
-      Minus80Freezer                = nrow(storage$minus80_freezer),
-      Crypgene_LiquidNitrogenBackup = nrow(storage$crypgene_backup)
-    )
+  bundle
+}
+
+
+#' Compatibility wrapper: export a subtree as a SQL dump.
+#'
+#' Thin wrapper around \code{export_passaging_subtree_bundle(..., format = "sql")}.
+#' Kept for backwards compatibility.  Prefer \code{export_passaging_subtree_bundle()}.
+#'
+#' @inheritParams export_passaging_subtree_bundle
+#' @return See \code{export_passaging_subtree_bundle}.
+export_passaging_subtree_sql <- function(
+    id,
+    file                   = NULL,
+    recursive              = FALSE,
+    include_storage        = TRUE,
+    include_perspectives   = TRUE,
+    conn                   = NULL,
+    external_parent_policy = c("nullify", "include", "error")) {
+  export_passaging_subtree_bundle(
+    id                     = id,
+    file                   = file,
+    format                 = "sql",
+    recursive              = recursive,
+    include_storage        = include_storage,
+    include_perspectives   = include_perspectives,
+    conn                   = conn,
+    external_parent_policy = external_parent_policy
   )
 }
