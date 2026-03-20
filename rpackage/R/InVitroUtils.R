@@ -1683,10 +1683,9 @@ pedigree_dist <- function(conn, ids, cellLine) {
 
 #' Fetch storage/location rows tied to the exported Passaging id set.
 #'
-#' Covers the three storage tables that reference Passaging(id):
-#'   LiquidNitrogen              FK: id -> Passaging.id (nullable; composite PK)
-#'   Minus80Freezer              FK: id -> Passaging.id (nullable; composite PK)
-#'   Crypgene_LiquidNitrogenBackup  FK: id -> Passaging.id (id IS the PK, NOT NULL)
+#' Covers the two storage tables that reference Passaging(id):
+#'   LiquidNitrogen  FK: id -> Passaging.id (nullable; composite PK)
+#'   Minus80Freezer  FK: id -> Passaging.id (nullable; composite PK)
 #'
 #' Only rows where id IN export_ids are returned. Storage slots that happen to
 #' be unoccupied or belong to other passaging ids are excluded automatically by
@@ -1694,13 +1693,12 @@ pedigree_dist <- function(conn, ids, cellLine) {
 #' Passaging ids to have no storage rows.
 #'
 #' Rows are ordered by each table's primary key for deterministic output:
-#'   LiquidNitrogen:               (Rack, Row, BoxRow, BoxColumn)
-#'   Minus80Freezer:               (Drawer, Position, BoxRow, BoxColumn)
-#'   Crypgene_LiquidNitrogenBackup: id
+#'   LiquidNitrogen:  (Rack, Row, BoxRow, BoxColumn)
+#'   Minus80Freezer:  (Drawer, Position, BoxRow, BoxColumn)
 #'
 #' @param export_ids Character vector of Passaging.id values in the subtree.
 #' @param conn       Open DBI/RMySQL connection. Read-only.
-#' @return Named list: liquid_nitrogen, minus80_freezer, crypgene_backup.
+#' @return Named list: liquid_nitrogen, minus80_freezer.
 #'         Each is a data frame (zero rows when nothing found; columns always present).
 .fetch_storage_rows <- function(export_ids, conn) {
 
@@ -1712,8 +1710,7 @@ pedigree_dist <- function(conn, ids, cellLine) {
   if (length(export_ids) == 0) {
     return(list(
       liquid_nitrogen = .empty_table("LiquidNitrogen"),
-      minus80_freezer = .empty_table("Minus80Freezer"),
-      crypgene_backup = .empty_table("Crypgene_LiquidNitrogenBackup")
+      minus80_freezer = .empty_table("Minus80Freezer")
     ))
   }
 
@@ -1739,18 +1736,9 @@ pedigree_dist <- function(conn, ids, cellLine) {
     conn = conn
   )
 
-  # Crypgene_LiquidNitrogenBackup — PK: id (same column as the Passaging FK)
-  crypgene_backup <- .db_fetch(
-    paste0("SELECT * FROM `Crypgene_LiquidNitrogenBackup` WHERE `id` IN ",
-           in_clause,
-           " ORDER BY `id`"),
-    conn = conn
-  )
-
   list(
     liquid_nitrogen = liquid_nitrogen,
-    minus80_freezer = minus80_freezer,
-    crypgene_backup = crypgene_backup
+    minus80_freezer = minus80_freezer
   )
 }
 
