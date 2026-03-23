@@ -1138,7 +1138,7 @@ test_that("format='rds': manifest_template is valid YAML seeded with exported no
       )
       expect_equal(
         unlist(manifest$nodes[[1]]$imaging, use.names = FALSE),
-        "img::1::overlay"
+        "img::1::images"
       )
     }
   )
@@ -1186,12 +1186,13 @@ test_that("format='rds': asset_inventory summarizes perspectives even when table
   )
 })
 
-test_that("format='rds': imaging inventory uses anchored node-id prefix and leaks no raw paths", {
+test_that("format='rds': imaging inventory discovers anchored microscopy and MRI image files and leaks no raw paths", {
   root_dir <- tempfile("subtree_img_root_")
   img_dir <- file.path(root_dir, "Images")
   dir.create(img_dir, recursive = TRUE)
   on.exit(unlink(root_dir, recursive = TRUE), add = TRUE)
-  file.create(file.path(img_dir, "abc_10x_ph_day1_overlay.png"))
+  file.create(file.path(img_dir, "abc_10x_ph_br_mask_overlay.tif"))
+  file.create(file.path(img_dir, "abc_flair_cavity.nii.gz"))
   file.create(file.path(img_dir, "abcdef_10x_ph_day1_overlay.png"))
   file.create(file.path(img_dir, "prefix_abc_10x_ph_day1_overlay.png"))
   file.create(file.path(img_dir, "abc_result.csv"))
@@ -1226,8 +1227,8 @@ test_that("format='rds': imaging inventory uses anchored node-id prefix and leak
       )
       inv <- result$asset_inventory$imaging
       expect_equal(nrow(inv), 1L)
-      expect_equal(inv$asset_id, "img::abc::overlay")
-      expect_equal(inv$file_count, 1L)
+      expect_equal(inv$asset_id, "img::abc::images")
+      expect_equal(inv$file_count, 2L)
       expect_false(any(grepl("Images|/", capture.output(str(inv)))))
     }
   )

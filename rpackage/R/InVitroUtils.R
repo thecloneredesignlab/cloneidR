@@ -1800,7 +1800,7 @@ pedigree_dist <- function(conn, ids, cellLine) {
 #' exposed in the returned inventory.
 #'
 #' @param export_ids   Character vector of Passaging.id values in the subtree.
-#' @param images_dir   Directory containing phenotype overlay images.
+#' @param images_dir   Directory containing anchored subtree-associated image files.
 #' @return data frame with columns: asset_id, passaging_id, asset_kind, label, file_count.
 .subtree_imaging_inventory <- function(export_ids, images_dir) {
   out <- data.frame(
@@ -1819,17 +1819,17 @@ pedigree_dist <- function(conn, ids, cellLine) {
   .escape_regex <- function(x) gsub("([][{}()+*^$|\\\\?.])", "\\\\\\1", x)
 
   for (node_id in export_ids) {
-    overlay_re <- paste0("^", .escape_regex(node_id), "_([0-9]+x_ph|t1|t2|flair|pd).*_overlay\\.png$")
-    hits <- list.files(images_dir, pattern = overlay_re, ignore.case = TRUE, full.names = FALSE)
+    image_re <- paste0("^", .escape_regex(node_id), "_([0-9]+x_ph|t1|t2|flair|pd).*")
+    hits <- list.files(images_dir, pattern = image_re, ignore.case = TRUE, full.names = FALSE)
     if (length(hits) == 0) next
 
     out <- rbind(
       out,
       data.frame(
-        asset_id         = paste0("img::", node_id, "::overlay"),
+        asset_id         = paste0("img::", node_id, "::images"),
         passaging_id     = as.character(node_id),
-        asset_kind       = "overlay",
-        label            = "Phenotype overlay images",
+        asset_kind       = "images",
+        label            = "Anchored image files",
         file_count       = length(hits),
         stringsAsFactors = FALSE
       )
