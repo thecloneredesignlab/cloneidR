@@ -1898,10 +1898,17 @@ pedigree_dist <- function(conn, ids, cellLine) {
 .subtree_manifest_template <- function(root_id, asset_inventory) {
   node_ids <- asset_inventory$nodes$passaging_id
   node_entries <- lapply(node_ids, function(node_id) {
+    node_perspectives <- asset_inventory$perspectives$perspective_type[
+      asset_inventory$perspectives$passaging_id == node_id
+    ]
+    node_imaging <- asset_inventory$imaging$asset_id[
+      asset_inventory$imaging$passaging_id == node_id
+    ]
+
     list(
       passaging_id = node_id,
-      perspectives = list(),
-      imaging      = list()
+      perspectives = as.list(sort(unique(as.character(node_perspectives)))),
+      imaging      = as.list(sort(unique(as.character(node_imaging))))
     )
   })
 

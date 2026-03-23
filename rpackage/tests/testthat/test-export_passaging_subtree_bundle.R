@@ -1084,9 +1084,37 @@ test_that("format='rds': bundle includes manifest_template and asset_inventory",
 })
 
 test_that("format='rds': manifest_template is valid YAML seeded with exported nodes", {
-  mock <- .make_full_mock()
+  mock <- function(stmt, conn = NULL) {
+    if (grepl("WHERE id =", stmt)) return(data.frame(id = "1", stringsAsFactors = FALSE))
+    if (grepl("passaged_from_id1 =", stmt)) return(data.frame(id = character(0), stringsAsFactors = FALSE))
+    if (grepl("SELECT \\* FROM `Passaging`", stmt)) return(.passaging_row("1"))
+    if (grepl("WHERE 1=0|WHERE `name` IN|WHERE `id` IN \\(1\\)|MediaIngredients", stmt))
+      return(data.frame())
+    if (grepl("FROM `Perspective` WHERE `origin` IN", stmt) &&
+        grepl("GROUP BY `origin`, `whichPerspective`", stmt)) {
+      return(data.frame(
+        passaging_id     = c("1", "1"),
+        perspective_type = c("GenomePerspective", "TranscriptomePerspective"),
+        row_count        = c(2L, 3L),
+        stringsAsFactors = FALSE
+      ))
+    }
+    if (grepl("Perspective WHERE `origin` IN", stmt))
+      return(data.frame(cloneID = integer(0), origin = character(0),
+                        profile_loci = integer(0), stringsAsFactors = FALSE))
+    if (grepl("LiquidNitrogen|Minus80Freezer", stmt)) return(data.frame())
+    stop("Unexpected query in manifest template mock: ", stmt)
+  }
+
+  root_dir <- tempfile("subtree_manifest_img_root_")
+  img_dir <- file.path(root_dir, "Images")
+  dir.create(img_dir, recursive = TRUE)
+  on.exit(unlink(root_dir, recursive = TRUE), add = TRUE)
+  file.create(file.path(img_dir, "1_10x_ph_day1_overlay.png"))
+
   with_mocked_bindings(
     .db_fetch = mock,
+    .cellseg_paths = function() list(output = root_dir),
     .package  = "cloneid",
     code = {
       result <- export_passaging_subtree_bundle(
@@ -1104,8 +1132,14 @@ test_that("format='rds': manifest_template is valid YAML seeded with exported no
       expect_equal(manifest$options$layout, "by_node")
       expect_length(manifest$nodes, 1L)
       expect_equal(manifest$nodes[[1]]$passaging_id, "1")
-      expect_equal(length(manifest$nodes[[1]]$perspectives), 0L)
-      expect_equal(length(manifest$nodes[[1]]$imaging), 0L)
+      expect_equal(
+        unlist(manifest$nodes[[1]]$perspectives, use.names = FALSE),
+        c("GenomePerspective", "TranscriptomePerspective")
+      )
+      expect_equal(
+        unlist(manifest$nodes[[1]]$imaging, use.names = FALSE),
+        "img::1::overlay"
+      )
     }
   )
 })
