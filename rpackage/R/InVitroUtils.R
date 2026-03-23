@@ -1743,6 +1743,184 @@ pedigree_dist <- function(conn, ids, cellLine) {
 }
 
 
+#' Build a perspective inventory summary for a subtree export.
+#'
+#' Returns only metadata needed to drive later manifest-based asset selection.
+#' No Perspective blob payloads are fetched here.
+#'
+#' @param export_ids Character vector of Passaging.id values in the subtree.
+#' @param conn       Open DBI/RMySQL connection. Read-only.
+#' @return data frame with columns: passaging_id, perspective_type, row_count.
+.subtree_perspective_inventory <- function(export_ids, conn) {
+  if (length(export_ids) == 0) {
+    return(data.frame(
+      passaging_id     = character(0),
+      perspective_type = character(0),
+      row_count        = integer(0),
+      stringsAsFactors = FALSE
+    ))
+  }
+
+  in_clause <- paste0(
+    "(",
+    paste(DBI::dbQuoteString(conn, export_ids), collapse = ", "),
+    ")"
+  )
+
+  inv <- .db_fetch(
+    paste0(
+      "SELECT `origin` AS `passaging_id`, `whichPerspective` AS `perspective_type`, ",
+      "COUNT(*) AS `row_count` ",
+      "FROM `Perspective` WHERE `origin` IN ", in_clause, " ",
+      "GROUP BY `origin`, `whichPerspective` ",
+      "ORDER BY `origin`, `whichPerspective`"
+    ),
+    conn = conn
+  )
+
+  if (nrow(inv) == 0) {
+    return(data.frame(
+      passaging_id     = character(0),
+      perspective_type = character(0),
+      row_count        = integer(0),
+      stringsAsFactors = FALSE
+    ))
+  }
+
+  inv$passaging_id     <- as.character(inv$passaging_id)
+  inv$perspective_type <- as.character(inv$perspective_type)
+  inv$row_count        <- as.integer(inv$row_count)
+  inv
+}
+
+
+#' Build an imaging inventory summary for a subtree export.
+#'
+#' Imaging asset ids are logical identifiers only. Raw filesystem paths are not
+#' exposed in the returned inventory.
+#'
+#' @param export_ids   Character vector of Passaging.id values in the subtree.
+#' @param images_dir   Directory containing phenotype overlay images.
+#' @return data frame with columns: asset_id, passaging_id, asset_kind, label, file_count.
+.subtree_imaging_inventory <- function(export_ids, images_dir) {
+  out <- data.frame(
+    asset_id          = character(0),
+    passaging_id      = character(0),
+    asset_kind        = character(0),
+    label             = character(0),
+    file_count        = integer(0),
+    stringsAsFactors  = FALSE
+  )
+
+  if (length(export_ids) == 0 || is.null(images_dir) || !dir.exists(images_dir)) {
+    return(out)
+  }
+
+  .escape_regex <- function(x) gsub("([][{}()+*^$|\\\\?.])", "\\\\\\1", x)
+
+  for (node_id in export_ids) {
+    overlay_re <- paste0("^", .escape_regex(node_id), "_([0-9]+x_ph|t1|t2|flair|pd).*_overlay\\.png$")
+    hits <- list.files(images_dir, pattern = overlay_re, ignore.case = TRUE, full.names = FALSE)
+    if (length(hits) == 0) next
+
+    out <- rbind(
+      out,
+      data.frame(
+        asset_id         = paste0("img::", node_id, "::overlay"),
+        passaging_id     = as.character(node_id),
+        asset_kind       = "overlay",
+        label            = "Phenotype overlay images",
+        file_count       = length(hits),
+        stringsAsFactors = FALSE
+      )
+    )
+  }
+
+  out
+}
+
+
+#' Combine subtree asset inventories into a manifest-facing structure.
+#'
+#' @param export_ids Character vector of Passaging.id values in the subtree.
+#' @param conn       Open DBI/RMySQL connection. Read-only.
+#' @param images_dir Optional imaging directory override. Defaults to the
+#'                   package-configured `CELLSEGMENTATIONS_OUTDIR/Images`.
+#' @return list with data frames: nodes, imaging, perspectives.
+.subtree_asset_inventory <- function(export_ids, conn, images_dir = NULL) {
+  if (is.null(images_dir)) {
+    images_dir <- tryCatch(
+      file.path(.cellseg_paths()$output, "Images"),
+      error = function(e) NULL
+    )
+  }
+
+  imaging_inv <- .subtree_imaging_inventory(export_ids, images_dir)
+  persp_inv   <- .subtree_perspective_inventory(export_ids, conn)
+
+  node_rows <- lapply(export_ids, function(node_id) {
+    node_persp <- persp_inv$perspective_type[persp_inv$passaging_id == node_id]
+    node_img_n <- sum(imaging_inv$file_count[imaging_inv$passaging_id == node_id])
+    data.frame(
+      passaging_id        = as.character(node_id),
+      has_imaging         = node_img_n > 0,
+      imaging_asset_count = as.integer(node_img_n),
+      perspective_types   = I(list(sort(unique(as.character(node_persp))))),
+      stringsAsFactors    = FALSE
+    )
+  })
+
+  nodes_inv <- if (length(node_rows) > 0) {
+    do.call(rbind, node_rows)
+  } else {
+    data.frame(
+      passaging_id        = character(0),
+      has_imaging         = logical(0),
+      imaging_asset_count = integer(0),
+      perspective_types   = I(list()),
+      stringsAsFactors    = FALSE
+    )
+  }
+
+  list(
+    nodes        = nodes_inv,
+    imaging      = imaging_inv,
+    perspectives = persp_inv
+  )
+}
+
+
+#' Build the editable YAML manifest template embedded in subtree bundle exports.
+#'
+#' @param root_id         Character. Root Passaging.id of the subtree bundle.
+#' @param asset_inventory Inventory list returned by `.subtree_asset_inventory()`.
+#' @return Character scalar containing YAML text.
+.subtree_manifest_template <- function(root_id, asset_inventory) {
+  node_ids <- asset_inventory$nodes$passaging_id
+  node_entries <- lapply(node_ids, function(node_id) {
+    list(
+      passaging_id = node_id,
+      perspectives = list(),
+      imaging      = list()
+    )
+  })
+
+  if (length(node_entries) == 0) node_entries <- list()
+
+  yaml::as.yaml(list(
+    manifest_version = 1L,
+    bundle_root_id   = root_id,
+    request_email    = "",
+    options          = list(
+      include_base_bundle = TRUE,
+      package_format      = "zip",
+      layout              = "by_node"
+    ),
+    nodes            = node_entries
+  ))
+}
+
+
 #' Decode molecular profiles for exported Perspective rows.
 #'
 #' For each unique (whichPerspective, origin) pair in \code{perspectives_df},
@@ -2166,6 +2344,14 @@ export_passaging_subtree_bundle <- function(
   }
 
   # -------------------------------------------------------------------------
+  # 6b. Manifest-facing inventory metadata for later asset selection.
+  # This is always included in the returned bundle, even when Perspective rows
+  # themselves are excluded from the lightweight export.
+  # -------------------------------------------------------------------------
+  asset_inventory   <- .subtree_asset_inventory(export_ids, conn = conn)
+  manifest_template <- .subtree_manifest_template(id, asset_inventory)
+
+  # -------------------------------------------------------------------------
   # 7. Decode molecular profiles (rds format only).
   # Shallow decode runs by default (decode_profiles_recursive=FALSE).
   # Recursive decode is not yet implemented (decode_profiles_recursive=TRUE
@@ -2222,6 +2408,8 @@ export_passaging_subtree_bundle <- function(
       LiquidNitrogen                = storage$liquid_nitrogen,
       Minus80Freezer                = storage$minus80_freezer
     ),
+    manifest_template = manifest_template,
+    asset_inventory   = asset_inventory,
     decoded    = decoded,
     sql        = NULL,
     statements = NULL

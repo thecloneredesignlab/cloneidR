@@ -408,6 +408,10 @@ test_that("policy='include': referenced parent not in DB triggers stop()", {
     if (grepl("Perspective WHERE `origin` IN", stmt))
       return(data.frame(cloneID = integer(0), origin = character(0),
                         profile_loci = integer(0), stringsAsFactors = FALSE))
+    if (grepl("FROM `Perspective` WHERE `origin` IN", stmt) &&
+        grepl("GROUP BY `origin`, `whichPerspective`", stmt))
+      return(data.frame(passaging_id = character(0), perspective_type = character(0),
+                        row_count = integer(0), stringsAsFactors = FALSE))
     # ── storage ─────────────────────────────────────────────────────────────
     if (grepl("LiquidNitrogen|Minus80Freezer", stmt))
       return(data.frame())
@@ -428,7 +432,8 @@ test_that("export_passaging_subtree_sql returns list with expected names", {
         include_perspectives = FALSE
       )
       expect_named(result, c("metadata", "export_ids", "detached_parent_refs",
-                              "tables", "decoded", "sql", "statements"))
+                              "tables", "manifest_template", "asset_inventory",
+                              "decoded", "sql", "statements"))
     }
   )
 })
@@ -1057,6 +1062,143 @@ test_that("format='rds': sql and statements are NULL", {
   )
 })
 
+test_that("format='rds': bundle includes manifest_template and asset_inventory", {
+  mock <- .make_full_mock()
+  with_mocked_bindings(
+    .db_fetch = mock,
+    .package  = "cloneid",
+    code = {
+      result <- export_passaging_subtree_bundle(
+        id     = "1",
+        format = "rds",
+        conn   = mc,
+        include_storage      = FALSE,
+        include_perspectives = FALSE
+      )
+      expect_true(is.character(result$manifest_template))
+      expect_length(result$manifest_template, 1L)
+      expect_true(is.list(result$asset_inventory))
+      expect_named(result$asset_inventory, c("nodes", "imaging", "perspectives"))
+    }
+  )
+})
+
+test_that("format='rds': manifest_template is valid YAML seeded with exported nodes", {
+  mock <- .make_full_mock()
+  with_mocked_bindings(
+    .db_fetch = mock,
+    .package  = "cloneid",
+    code = {
+      result <- export_passaging_subtree_bundle(
+        id     = "1",
+        format = "rds",
+        conn   = mc,
+        include_storage      = FALSE,
+        include_perspectives = FALSE
+      )
+      manifest <- yaml::read_yaml(text = result$manifest_template)
+      expect_equal(manifest$manifest_version, 1L)
+      expect_equal(manifest$bundle_root_id, "1")
+      expect_equal(manifest$request_email, "")
+      expect_equal(manifest$options$package_format, "zip")
+      expect_equal(manifest$options$layout, "by_node")
+      expect_length(manifest$nodes, 1L)
+      expect_equal(manifest$nodes[[1]]$passaging_id, "1")
+      expect_equal(length(manifest$nodes[[1]]$perspectives), 0L)
+      expect_equal(length(manifest$nodes[[1]]$imaging), 0L)
+    }
+  )
+})
+
+test_that("format='rds': asset_inventory summarizes perspectives even when tables$Perspective is empty", {
+  mock <- function(stmt, conn = NULL) {
+    if (grepl("WHERE id =", stmt)) return(data.frame(id = "1", stringsAsFactors = FALSE))
+    if (grepl("passaged_from_id1 =", stmt)) return(data.frame(id = character(0), stringsAsFactors = FALSE))
+    if (grepl("SELECT \\* FROM `Passaging`", stmt)) return(.passaging_row("1"))
+    if (grepl("WHERE 1=0|WHERE `name` IN|WHERE `id` IN \\(1\\)|MediaIngredients", stmt))
+      return(data.frame())
+    if (grepl("FROM `Perspective` WHERE `origin` IN", stmt) &&
+        grepl("GROUP BY `origin`, `whichPerspective`", stmt)) {
+      return(data.frame(
+        passaging_id     = c("1", "1"),
+        perspective_type = c("GenomePerspective", "TranscriptomePerspective"),
+        row_count        = c(2L, 3L),
+        stringsAsFactors = FALSE
+      ))
+    }
+    if (grepl("Perspective WHERE `origin` IN", stmt))
+      return(data.frame(cloneID = integer(0), origin = character(0),
+                        profile_loci = integer(0), stringsAsFactors = FALSE))
+    if (grepl("LiquidNitrogen|Minus80Freezer", stmt)) return(data.frame())
+    stop("Unexpected query in perspective summary mock: ", stmt)
+  }
+
+  with_mocked_bindings(
+    .db_fetch = mock,
+    .package  = "cloneid",
+    code = {
+      result <- export_passaging_subtree_bundle(
+        id     = "1",
+        format = "rds",
+        conn   = mc,
+        include_storage      = FALSE,
+        include_perspectives = FALSE
+      )
+      expect_equal(nrow(result$tables$Perspective), 0L)
+      expect_equal(nrow(result$asset_inventory$perspectives), 2L)
+      expect_equal(sort(result$asset_inventory$nodes$perspective_types[[1]]),
+                   c("GenomePerspective", "TranscriptomePerspective"))
+    }
+  )
+})
+
+test_that("format='rds': imaging inventory uses anchored node-id prefix and leaks no raw paths", {
+  root_dir <- tempfile("subtree_img_root_")
+  img_dir <- file.path(root_dir, "Images")
+  dir.create(img_dir, recursive = TRUE)
+  on.exit(unlink(root_dir, recursive = TRUE), add = TRUE)
+  file.create(file.path(img_dir, "abc_10x_ph_day1_overlay.png"))
+  file.create(file.path(img_dir, "abcdef_10x_ph_day1_overlay.png"))
+  file.create(file.path(img_dir, "prefix_abc_10x_ph_day1_overlay.png"))
+  file.create(file.path(img_dir, "abc_result.csv"))
+
+  mock <- function(stmt, conn = NULL) {
+    if (grepl("WHERE id =", stmt)) return(data.frame(id = "abc", stringsAsFactors = FALSE))
+    if (grepl("passaged_from_id1 =", stmt)) return(data.frame(id = character(0), stringsAsFactors = FALSE))
+    if (grepl("SELECT \\* FROM `Passaging`", stmt)) return(.passaging_row("abc"))
+    if (grepl("WHERE 1=0|WHERE `name` IN|MediaIngredients", stmt)) return(data.frame())
+    if (grepl("FROM `Perspective` WHERE `origin` IN", stmt) &&
+        grepl("GROUP BY `origin`, `whichPerspective`", stmt))
+      return(data.frame(passaging_id = character(0), perspective_type = character(0),
+                        row_count = integer(0), stringsAsFactors = FALSE))
+    if (grepl("Perspective WHERE `origin` IN", stmt))
+      return(data.frame(cloneID = integer(0), origin = character(0),
+                        profile_loci = integer(0), stringsAsFactors = FALSE))
+    if (grepl("LiquidNitrogen|Minus80Freezer", stmt)) return(data.frame())
+    stop("Unexpected query in imaging inventory mock: ", stmt)
+  }
+
+  with_mocked_bindings(
+    .db_fetch = mock,
+    .cellseg_paths = function() list(output = root_dir),
+    .package  = "cloneid",
+    code = {
+      result <- export_passaging_subtree_bundle(
+        id     = "abc",
+        format = "rds",
+        conn   = mc,
+        include_storage      = FALSE,
+        include_perspectives = FALSE
+      )
+      inv <- result$asset_inventory$imaging
+      expect_equal(nrow(inv), 1L)
+      expect_equal(inv$asset_id, "img::abc::overlay")
+      expect_equal(inv$file_count, 1L)
+      expect_false(any(grepl("Images|/", capture.output(str(inv)))))
+    }
+  )
+})
+
 test_that("format='rds': metadata contains expected keys and correct values", {
   mock <- .make_full_mock()
   with_mocked_bindings(
@@ -1165,7 +1307,8 @@ test_that("export_passaging_subtree_sql wrapper returns same top-level structure
         include_perspectives = FALSE
       )
       expect_named(r_sql, c("metadata", "export_ids", "detached_parent_refs",
-                             "tables", "decoded", "sql", "statements"))
+                             "tables", "manifest_template", "asset_inventory",
+                             "decoded", "sql", "statements"))
       expect_equal(r_sql$metadata$format, "sql")
     }
   )
