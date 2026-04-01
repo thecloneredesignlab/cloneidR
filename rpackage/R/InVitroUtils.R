@@ -620,8 +620,8 @@ plotLiquidNitrogenBox <- function (rack, row) {
 # files in each of the five OUTDIR subfolders matching ^{id}_. Does NOT delete
 # directories. Safe to call when stores are empty (no-op). Called by the portal's
 # IVU.R caller via cloneid:::.remove_id_artifacts() for compensating rollback.
-.remove_id_artifacts <- function(id, indir, outdir) {
-  .cellseg_delete_paths(id, indir, outdir)
+.remove_id_artifacts <- function(id, indir = NULL, outdir = NULL) {
+  .cellseg_delete_id_artifacts(id)
 }
 
 .readCellSegmentationsOutput <- function(id, from, cellLine, dishSurfaceArea_cm2, cellCount, excludeOption, preprocessing=T, param=NULL){

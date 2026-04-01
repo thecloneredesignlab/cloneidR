@@ -7,6 +7,7 @@ library(testthat)
 .is_s3   <- cloneid:::.cellseg_is_s3
 .is_local<- cloneid:::.cellseg_is_local
 .deletep <- cloneid:::.cellseg_delete_paths
+.delete_artifacts <- cloneid:::.cellseg_delete_id_artifacts
 .copy_in <- cloneid:::.cellseg_copy_to_input
 .copy_out<- cloneid:::.cellseg_copy_to_output
 .subs    <- cloneid:::.cellseg_output_subdirs
@@ -110,8 +111,8 @@ test_that(".cellseg_delete_paths removes only matching id-scoped artifacts", {
   file.create(keep_in)
   file.create(rm_in)
 
-  keep_out <- file.path(outdir, "Images", "OTHER_overlay.png")
-  rm_out <- file.path(outdir, "Images", "CASE123_overlay.png")
+  keep_out <- file.path(outdir, "Images", "OTHER_10x_ph_bl_overlay.png")
+  rm_out <- file.path(outdir, "Images", "CASE123_10x_ph_bl_overlay.png")
   file.create(keep_out)
   file.create(rm_out)
 
@@ -121,6 +122,42 @@ test_that(".cellseg_delete_paths removes only matching id-scoped artifacts", {
   expect_false(file.exists(rm_in))
   expect_true(file.exists(keep_out))
   expect_false(file.exists(rm_out))
+})
+
+test_that(".cellseg_delete_id_artifacts removes durable artifacts through package config and leaves tmp untouched", {
+  root <- tempfile("cellseg-delete-artifacts-")
+  dir.create(root)
+  indir <- file.path(root, "input")
+  outdir <- file.path(root, "output")
+  tmpdir <- file.path(root, "tmp")
+  dir.create(indir)
+  dir.create(outdir)
+  dir.create(tmpdir)
+  for (sub in .subs()) dir.create(file.path(outdir, sub), recursive = TRUE)
+
+  durable_in <- file.path(indir, "CASE123_10x_ph_bl.tif")
+  durable_out <- file.path(outdir, "Images", "CASE123_10x_ph_bl_overlay.png")
+  transient_tmp <- file.path(tmpdir, "CASE123_transient.tmp")
+  writeLines("x", durable_in)
+  writeLines("y", durable_out)
+  writeLines("z", transient_tmp)
+
+  mock_cfg <- list(
+    backend = "local",
+    input = indir,
+    output = outdir,
+    tmp = tmpdir
+  )
+
+  with_mocked_bindings(
+    .cellseg_read_config = function() mock_cfg,
+    .package = "cloneid",
+    code = .delete_artifacts("CASE123")
+  )
+
+  expect_false(file.exists(durable_in))
+  expect_false(file.exists(durable_out))
+  expect_true(file.exists(transient_tmp))
 })
 
 test_that(".cellseg_copy_to_input and .cellseg_copy_to_output copy files in local mode", {
