@@ -232,6 +232,33 @@ test_that(".cellseg_durable_paths emits s3 URIs while .cellseg_tmp_dir remains l
   )
 })
 
+test_that("s3 artifact listings return character(0) when no keys match", {
+  s3_cfg <- list(
+    backend = "s3",
+    input = "/unused/input",
+    output = "/unused/output",
+    tmp = tempdir(),
+    bucket = "cloneid4mysql8",
+    inputPrefix = "CellSegmentations/input",
+    outputPrefix = "CellSegmentations/output"
+  )
+
+  with_mocked_bindings(
+    .cellseg_s3_list_keys = function(...) NULL,
+    .package = "cloneid",
+    code = {
+      expect_identical(
+        .list_input_artifacts("CASE123", config = s3_cfg),
+        character(0)
+      )
+      expect_identical(
+        .list_output_artifacts("CASE123", "Images", config = s3_cfg),
+        character(0)
+      )
+    }
+  )
+})
+
 test_that(".cellseg_delete_paths removes only matching id-scoped artifacts", {
   root <- tempfile("cellseg-")
   dir.create(root)

@@ -167,6 +167,11 @@
 }
 
 .cellseg_match_keys <- function(keys, pattern) {
+  if (is.null(keys) || length(keys) == 0) {
+    return(character(0))
+  }
+
+  keys <- unname(as.character(keys))
   keys[grepl(pattern, basename(keys))]
 }
 
@@ -436,6 +441,9 @@
       .cellseg_s3_list_keys(input_info$prefix, config = config),
       .cellseg_input_artifact_pattern(id)
     )
+    if (length(keys) == 0) {
+      return(character(0))
+    }
     return(paste0("s3://", config$bucket, "/", keys))
   }
 
@@ -460,6 +468,9 @@
       .cellseg_s3_list_keys(prefix, config = config),
       .cellseg_ingest_pattern(id)
     )
+    if (length(keys) == 0) {
+      return(character(0))
+    }
     return(paste0("s3://", config$bucket, "/", keys))
   }
 
