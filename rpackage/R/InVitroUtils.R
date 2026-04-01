@@ -621,6 +621,11 @@ plotLiquidNitrogenBox <- function (rack, row) {
 # directories. Safe to call when stores are empty (no-op). Called by the portal's
 # IVU.R caller via cloneid:::.remove_id_artifacts() for compensating rollback.
 .remove_id_artifacts <- function(id, indir = NULL, outdir = NULL) {
+  if (!is.null(indir) && !is.null(outdir)) {
+    .cellseg_delete_paths(id, indir, outdir)
+    return(invisible(NULL))
+  }
+
   .cellseg_delete_id_artifacts(id)
 }
 

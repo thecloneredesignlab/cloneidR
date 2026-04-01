@@ -160,6 +160,31 @@ test_that(".cellseg_delete_id_artifacts removes durable artifacts through packag
   expect_true(file.exists(transient_tmp))
 })
 
+test_that(".remove_id_artifacts respects explicit caller-supplied durable roots", {
+  root <- tempfile("cellseg-explicit-cleanup-")
+  dir.create(root)
+  indir <- file.path(root, "input")
+  outdir <- file.path(root, "output")
+  tmpdir <- file.path(root, "tmp")
+  dir.create(indir)
+  dir.create(outdir)
+  dir.create(tmpdir)
+  for (sub in .subs()) dir.create(file.path(outdir, sub), recursive = TRUE)
+
+  durable_in <- file.path(indir, "CASE123_10x_ph_bl.tif")
+  durable_out <- file.path(outdir, "Images", "CASE123_10x_ph_bl_overlay.png")
+  transient_tmp <- file.path(tmpdir, "CASE123_transient.tmp")
+  writeLines("x", durable_in)
+  writeLines("y", durable_out)
+  writeLines("z", transient_tmp)
+
+  cloneid:::.remove_id_artifacts("CASE123", indir, outdir)
+
+  expect_false(file.exists(durable_in))
+  expect_false(file.exists(durable_out))
+  expect_true(file.exists(transient_tmp))
+})
+
 test_that(".cellseg_copy_to_input and .cellseg_copy_to_output copy files in local mode", {
   root <- tempfile("cellseg-copy-")
   dir.create(root)
