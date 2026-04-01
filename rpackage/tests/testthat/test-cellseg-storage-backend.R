@@ -25,6 +25,131 @@ library(testthat)
 .s3_output_prefix <- cloneid:::.cellseg_s3_output_prefix
 .s3_uri <- cloneid:::.cellseg_s3_uri
 
+test_that("setupCLONEID stamps local cell segmentation paths into installed config", {
+  pkg_dir <- tempfile("cloneid-pkg-")
+  dir.create(file.path(pkg_dir, "config"), recursive = TRUE)
+  cfg_path <- file.path(pkg_dir, "config", "config.yaml")
+  yaml::write_yaml(list(
+    mysqlConnection = list(
+      host = "localhost",
+      port = 3306,
+      user = "",
+      password = "",
+      database = "CLONEID",
+      schemaScript = "CLONEID_schema.sql"
+    ),
+    cellSegmentation = list(
+      backend = "local",
+      input = "~/CellSegmentations/",
+      output = "~/CellSegmentations/output/",
+      tmp = "~/Downloads/tmp/",
+      bucket = NULL,
+      region = NULL,
+      endpoint = NULL,
+      inputPrefix = "inputs",
+      outputPrefix = "outputs"
+    )
+  ), cfg_path)
+
+  indir <- file.path(tempdir(), "cellseg-local-input")
+  outdir <- file.path(tempdir(), "cellseg-local-output")
+  tmpdir <- file.path(tempdir(), "cellseg-local-tmp")
+  dir.create(indir, recursive = TRUE, showWarnings = FALSE)
+  dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
+  dir.create(tmpdir, recursive = TRUE, showWarnings = FALSE)
+
+  with_mocked_bindings(
+    system.file = function(..., package = NULL) {
+      if (!identical(package, "cloneid")) stop("unexpected package")
+      pkg_dir
+    },
+    .package = "base",
+    code = {
+      cloneid::setupCLONEID(
+        cellseg_input = indir,
+        cellseg_output = outdir,
+        cellseg_tmp = tmpdir,
+        cellseg_backend = "local"
+      )
+
+      stamped <- .cfg()
+      expect_identical(stamped$backend, "local")
+      expect_identical(stamped$input, indir)
+      expect_identical(stamped$output, outdir)
+      expect_identical(stamped$tmp, tmpdir)
+
+      paths <- .paths()
+      expect_identical(paths$input, paste0(normalizePath(indir), "/"))
+      expect_identical(paths$output, paste0(normalizePath(outdir), "/"))
+      expect_identical(paths$tmp, normalizePath(tmpdir))
+    }
+  )
+})
+
+test_that("setupCLONEID stamps s3 cell segmentation config while tmp remains local", {
+  pkg_dir <- tempfile("cloneid-pkg-")
+  dir.create(file.path(pkg_dir, "config"), recursive = TRUE)
+  cfg_path <- file.path(pkg_dir, "config", "config.yaml")
+  yaml::write_yaml(list(
+    mysqlConnection = list(
+      host = "localhost",
+      port = 3306,
+      user = "",
+      password = "",
+      database = "CLONEID",
+      schemaScript = "CLONEID_schema.sql"
+    ),
+    cellSegmentation = list(
+      backend = "local",
+      input = "~/CellSegmentations/",
+      output = "~/CellSegmentations/output/",
+      tmp = "~/Downloads/tmp/",
+      bucket = NULL,
+      region = NULL,
+      endpoint = NULL,
+      inputPrefix = "inputs",
+      outputPrefix = "outputs"
+    )
+  ), cfg_path)
+
+  tmpdir <- file.path(tempdir(), "cellseg-s3-tmp")
+  dir.create(tmpdir, recursive = TRUE, showWarnings = FALSE)
+
+  with_mocked_bindings(
+    system.file = function(..., package = NULL) {
+      if (!identical(package, "cloneid")) stop("unexpected package")
+      pkg_dir
+    },
+    .package = "base",
+    code = {
+      cloneid::setupCLONEID(
+        cellseg_input = "s3://cloneid4mysql8/CellSegmentations/input",
+        cellseg_output = "s3://cloneid4mysql8/CellSegmentations/output",
+        cellseg_tmp = tmpdir,
+        cellseg_backend = "s3",
+        cellseg_bucket = "cloneid4mysql8",
+        cellseg_region = "us-east-1",
+        cellseg_input_prefix = "CellSegmentations/input",
+        cellseg_output_prefix = "CellSegmentations/output"
+      )
+
+      stamped <- .cfg()
+      expect_identical(stamped$backend, "s3")
+      expect_identical(stamped$bucket, "cloneid4mysql8")
+      expect_identical(stamped$region, "us-east-1")
+      expect_identical(stamped$inputPrefix, "CellSegmentations/input")
+      expect_identical(stamped$outputPrefix, "CellSegmentations/output")
+      expect_identical(stamped$input, "s3://cloneid4mysql8/CellSegmentations/input")
+      expect_identical(stamped$output, "s3://cloneid4mysql8/CellSegmentations/output")
+
+      paths <- .paths()
+      expect_identical(paths$input, "s3://cloneid4mysql8/CellSegmentations/input/")
+      expect_identical(paths$output, "s3://cloneid4mysql8/CellSegmentations/output/")
+      expect_identical(paths$tmp, normalizePath(tmpdir))
+    }
+  )
+})
+
 test_that(".cellseg_read_config defaults backend to local when absent", {
   with_mocked_bindings(
     read_yaml = function(...) list(cellSegmentation = list(
