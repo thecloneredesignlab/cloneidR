@@ -2,6 +2,8 @@ library(testthat)
 
 .cfg     <- cloneid:::.cellseg_read_config
 .paths   <- cloneid:::.cellseg_paths
+.durable <- cloneid:::.cellseg_durable_paths
+.tmpdirf <- cloneid:::.cellseg_tmp_dir
 .is_s3   <- cloneid:::.cellseg_is_s3
 .is_local<- cloneid:::.cellseg_is_local
 .deletep <- cloneid:::.cellseg_delete_paths
@@ -69,6 +71,25 @@ test_that(".cellseg_paths returns normalized local paths and rejects s3 backend"
       code = .paths()
     ),
     "S3 cellSegmentation backend is configured"
+  )
+})
+
+test_that(".cellseg_durable_paths rejects s3 backend but .cellseg_tmp_dir remains local-only", {
+  s3_cfg <- list(
+    backend = "s3",
+    input = "/unused/input",
+    output = "/unused/output",
+    tmp = tempdir()
+  )
+
+  expect_error(
+    .durable(s3_cfg),
+    "S3 cellSegmentation backend is configured"
+  )
+
+  expect_identical(
+    .tmpdirf(s3_cfg),
+    normalizePath(s3_cfg$tmp)
   )
 })
 

@@ -39,16 +39,23 @@
   identical(config$backend, "local")
 }
 
-.cellseg_paths <- function() {
-  cfg <- .cellseg_read_config()
-  if (.cellseg_is_s3(cfg)) {
+.cellseg_durable_paths <- function(config = .cellseg_read_config()) {
+  if (.cellseg_is_s3(config)) {
     stop("S3 cellSegmentation backend is configured but package durable-storage migration is not complete yet.")
   }
   list(
-    input = paste0(normalizePath(cfg$input), "/"),
-    output = paste0(normalizePath(cfg$output), "/"),
-    tmp = normalizePath(cfg$tmp)
+    input = paste0(normalizePath(config$input), "/"),
+    output = paste0(normalizePath(config$output), "/")
   )
+}
+
+.cellseg_tmp_dir <- function(config = .cellseg_read_config()) {
+  normalizePath(config$tmp)
+}
+
+.cellseg_paths <- function() {
+  cfg <- .cellseg_read_config()
+  c(.cellseg_durable_paths(cfg), list(tmp = .cellseg_tmp_dir(cfg)))
 }
 
 .cellseg_delete_paths <- function(id, input_root, output_root) {

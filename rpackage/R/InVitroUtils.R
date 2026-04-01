@@ -631,8 +631,8 @@ plotLiquidNitrogenBox <- function (rack, row) {
   ## c) well from 96-plate = 0.32 cm^2
   ## CellSegmentations Settings; @TODO: should be set under settings, not here
   UM2CM = 1e-4
-  .cellseg <- .cellseg_paths()
-  TMP_DIR = .cellseg$tmp
+  .cellseg <- .cellseg_durable_paths()
+  TMP_DIR = .cellseg_tmp_dir()
   unlink(TMP_DIR,recursive=T, force = T)
   TMP_DIR = paste0(TMP_DIR,filesep,id);
   unlink(TMP_DIR,recursive=T, force = T)
