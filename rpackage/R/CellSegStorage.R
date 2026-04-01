@@ -94,6 +94,133 @@
   invisible(ok)
 }
 
+.cellseg_ensure_output_dirs <- function(config = .cellseg_read_config()) {
+  if (.cellseg_is_s3(config)) {
+    stop("S3 cellSegmentation output directory initialization is not implemented yet.")
+  }
+
+  output_root <- .cellseg_paths()$output
+  for (subdir in .cellseg_output_subdirs()) {
+    suppressWarnings(dir.create(paste0(output_root, subdir)))
+  }
+
+  invisible(output_root)
+}
+
+.cellseg_list_input_files <- function(id, config = .cellseg_read_config()) {
+  if (.cellseg_is_s3(config)) {
+    stop("S3 cellSegmentation input listing is not implemented yet.")
+  }
+
+  input_root <- .cellseg_paths()$input
+  files <- list.files(input_root, pattern = paste0("^", id, "_"), full.names = TRUE)
+  files <- grep("x_ph_", files, value = TRUE)
+  files <- grep("\\.tif$", files, value = TRUE, ignore.case = TRUE)
+  files
+}
+
+.cellseg_clear_output_files <- function(id, config = .cellseg_read_config()) {
+  if (.cellseg_is_s3(config)) {
+    stop("S3 cellSegmentation output cleanup is not implemented yet.")
+  }
+
+  output_root <- .cellseg_paths()$output
+  for (subfolder in .cellseg_output_subdirs()) {
+    files <- list.files(
+      paste0(output_root, subfolder),
+      pattern = .cellseg_ingest_pattern(id),
+      full.names = TRUE
+    )
+    file.remove(files)
+  }
+
+  invisible(NULL)
+}
+
+.cellseg_stage_inputs_to_tmp <- function(id, tmp_dir, config = .cellseg_read_config()) {
+  if (.cellseg_is_s3(config)) {
+    stop("S3 cellSegmentation temporary staging is not implemented yet.")
+  }
+
+  files <- .cellseg_list_input_files(id, config = config)
+  dir.create(tmp_dir, recursive = TRUE, showWarnings = FALSE)
+  if (length(files) > 0) {
+    ok <- file.copy(files, tmp_dir)
+    if (!all(ok)) {
+      stop(paste0("Failed to stage all input files into temporary directory for id ", id))
+    }
+  }
+  files
+}
+
+.cellseg_list_output_files <- function(id, subdir, config = .cellseg_read_config()) {
+  if (.cellseg_is_s3(config)) {
+    stop("S3 cellSegmentation output listing is not implemented yet.")
+  }
+
+  output_root <- .cellseg_paths()$output
+  list.files(
+    paste0(output_root, subdir),
+    pattern = .cellseg_ingest_pattern(id),
+    full.names = TRUE
+  )
+}
+
+.cellseg_wait_for_analysis_output <- function(id, how_many, timeout = 120, config = .cellseg_read_config()) {
+  if (.cellseg_is_s3(config)) {
+    stop("S3 cellSegmentation output wait loop is not implemented yet.")
+  }
+
+  output_root <- .cellseg_paths()$output
+  print(paste0("Waiting for ", id, " to appear under ", output_root, " ..."), quote = FALSE)
+
+  f_o <- character(0)
+  start_time <- Sys.time()
+  while (length(f_o) < how_many && as.numeric(difftime(Sys.time(), start_time, units = "secs")) < timeout) {
+    Sys.sleep(3)
+    f_o <- .cellseg_list_output_files(id, "Images", config = config)
+  }
+
+  if (length(f_o) < how_many) {
+    warning("Timed out waiting for analysis output.")
+    return()
+  }
+
+  f <- .cellseg_list_output_files(id, "DetectionResults", config = config)
+  f_a <- .cellseg_list_output_files(id, "Annotations", config = config)
+  f_c <- .cellseg_list_output_files(id, "Confluency", config = config)
+  f_c <- grep("\\.csv$", f_c, value = TRUE, ignore.case = TRUE)
+
+  print(
+    paste0("Output found for ", fileparts(f_o[1])$name, " and ", (length(f_o) - 1), " other image files."),
+    quote = FALSE
+  )
+  list(f = f, f_a = f_a, f_o = f_o, f_c = f_c)
+}
+
+.cellseg_get_mri_files <- function(id, signal = "t2", config = .cellseg_read_config()) {
+  if (.cellseg_is_s3(config)) {
+    stop("S3 cellSegmentation MRI file lookup is not implemented yet.")
+  }
+
+  output_root <- .cellseg_paths()$output
+  input_root <- .cellseg_paths()$input
+  signal <- gsub("_cavity", "", signal)
+
+  list(
+    mask = list.files(
+      paste0(output_root, "/Images"),
+      pattern = paste0("^", id, "_", signal),
+      full.names = TRUE
+    )[1],
+    raw = list.files(
+      input_root,
+      pattern = paste0("^", id, "_", signal),
+      full.names = TRUE
+    )[1]
+  )
+}
+
 .cellseg_copy_to_input <- function(files, config = .cellseg_read_config()) {
   if (.cellseg_is_s3(config)) {
     stop("S3 cellSegmentation input promotion is not implemented yet.")

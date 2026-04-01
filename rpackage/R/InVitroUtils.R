@@ -646,9 +646,7 @@ plotLiquidNitrogenBox <- function (rack, row) {
   PREPROCESS_SCRIPT=grep("preprocessing.py",PYTHON_SCRIPTS, value = T)
   TISSUESEG_SCRIPT=grep("tissue_seg.py",PYTHON_SCRIPTS, value = T)
   QCSTATS_SCRIPT=grep("QC_Statistics.py",PYTHON_SCRIPTS, value = T)
-  for (subdir in .cellseg_output_subdirs()) {
-    suppressWarnings(dir.create(paste0(CELLSEGMENTATIONS_OUTDIR, subdir)))
-  }
+  .cellseg_ensure_output_dirs()
   # suppressWarnings(dir.create("~/Downloads/qpscript"))
   # suppressWarnings(dir.create(fileparts(QUPATH_PRJ)$pathstr))
   # qpversion = list.files("/Applications", pattern = "QuPath")
@@ -666,16 +664,9 @@ plotLiquidNitrogenBox <- function (rack, row) {
   }
   
   ## Copy raw images to temporary directory:
-  dir.create(TMP_DIR, recursive = T)
-  f_i = list.files(CELLSEGMENTATIONS_INDIR, pattern = paste0("^",id,"_"), full.names = T)
-  f_i = grep("x_ph_",f_i,value=T)
-  f_i = grep(".tif$",f_i,value=T)
-  file.copy(f_i, TMP_DIR)
+  f_i = .cellseg_stage_inputs_to_tmp(id, TMP_DIR)
   ## Delete output files from prior runs (anchored per-id pattern; all 5 subfolders):
-  for(subfolder in .cellseg_output_subdirs()){
-    f = list.files(paste0(CELLSEGMENTATIONS_OUTDIR,subfolder), pattern = paste0("^",id,"_([0-9]+x_ph|t1|t2|flair|pd)"), full.names = T)
-    file.remove(f)
-  }
+  .cellseg_clear_output_files(id)
   ## Input files should never be deleted. What goes into `CELLSEGMENTATIONS_OUTDIR` stays in CELLSEGMENTATIONS_OUTDIR. This will ensure that raw data is never deleted in case any analysis needs to be redone
   ## @TODO: To prevent accumulation of incompletely processed images in CELLSEGMENTATIONS_OUTDIR, we would want to copy them over only after we ensure correct processing.
   
@@ -911,40 +902,13 @@ plotLiquidNitrogenBox <- function (rack, row) {
 
 
 .wait_for_analysis_output <- function(id, howMany) {
-  CELLSEGMENTATIONS_OUTDIR <- .cellseg_paths()$output
-
-  ## Wait and look for imaging analysis output
-  print(paste0("Waiting for ", id, " to appear under ", CELLSEGMENTATIONS_OUTDIR, " ..."), quote = FALSE)
-  f_o <- c()
-  start_time <- Sys.time()
-  timeout <- 120  # 2 minutes in seconds
-  while (length(f_o) < howMany && as.numeric(difftime(Sys.time(), start_time, units = "secs")) < timeout) {
-    Sys.sleep(3)
-    f_o <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "Images"), pattern = paste0("^",id, "_([0-9]+x_ph|t1|t2|flair|pd)"), full.names = TRUE)
-  }
-
-  if (length(f_o) < howMany) {
-    warning("Timed out waiting for analysis output.")
-    return()
-  }
-
-  f   <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "DetectionResults"), pattern = paste0("^",id, "_([0-9]+x_ph|t1|t2|flair|pd)"), full.names = TRUE)
-  f_a <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "Annotations"),      pattern = paste0("^",id, "_([0-9]+x_ph|t1|t2|flair|pd)"), full.names = TRUE)
-  f_c <- list.files(paste0(CELLSEGMENTATIONS_OUTDIR, "Confluency"),        pattern = paste0("^",id, "_([0-9]+x_ph|t1|t2|flair|pd)"), full.names = TRUE)
-  f_c <- grep(".csv", f_c, value = TRUE)
-  print(paste0("Output found for ", fileparts(f_o[1])$name, " and ", (length(f_o) - 1), " other image files."), quote = FALSE)
-  return(list(f = f, f_a = f_a, f_o = f_o, f_c = f_c))
+  .cellseg_wait_for_analysis_output(id, howMany)
 }
 
 getMRIdata<-function(id, signal="t2"){
-  .cellseg <- .cellseg_paths()
-  CELLSEGMENTATIONS_OUTDIR <- .cellseg$output
-  CELLSEGMENTATIONS_INDIR  <- .cellseg$input
-  x=list.files(paste0(CELLSEGMENTATIONS_OUTDIR,"/Images"), pattern=paste0("^",id,"_",signal), full.names = T)[1]
-  nii_mask=RNifti::readNifti(x)
-  signal=gsub("_cavity","",signal)
-  x=list.files(CELLSEGMENTATIONS_INDIR, pattern=paste0("^",id,"_",signal), full.names = T)[1]
-  nii=RNifti::readNifti(x)
+  mri_files <- .cellseg_get_mri_files(id, signal)
+  nii_mask=RNifti::readNifti(mri_files$mask)
+  nii=RNifti::readNifti(mri_files$raw)
   return(list(nii=nii,mask=nii_mask))
 }
 

@@ -8,6 +8,9 @@ library(testthat)
 .copy_in <- cloneid:::.cellseg_copy_to_input
 .copy_out<- cloneid:::.cellseg_copy_to_output
 .subs    <- cloneid:::.cellseg_output_subdirs
+.stage_in<- cloneid:::.cellseg_stage_inputs_to_tmp
+.clear_out <- cloneid:::.cellseg_clear_output_files
+.list_out <- cloneid:::.cellseg_list_output_files
 
 test_that(".cellseg_read_config defaults backend to local when absent", {
   with_mocked_bindings(
@@ -127,4 +130,83 @@ test_that(".cellseg_copy_to_input and .cellseg_copy_to_output copy files in loca
 
   expect_true(file.exists(file.path(indir, basename(src_file))))
   expect_true(file.exists(file.path(outdir, "Images", basename(src_file))))
+})
+
+test_that(".cellseg_stage_inputs_to_tmp stages microscopy inputs and .cellseg_clear_output_files removes matching outputs", {
+  root <- tempfile("cellseg-stage-")
+  dir.create(root)
+  indir <- file.path(root, "input")
+  outdir <- file.path(root, "output")
+  tmpdir <- file.path(root, "tmp")
+  dir.create(indir)
+  dir.create(outdir)
+  dir.create(tmpdir)
+  for (sub in .subs()) dir.create(file.path(outdir, sub), recursive = TRUE)
+
+  src_match <- file.path(indir, "CASE123_10x_ph_bl.tif")
+  src_other <- file.path(indir, "OTHER_10x_ph_bl.tif")
+  writeLines("x", src_match)
+  writeLines("y", src_other)
+
+  out_match <- file.path(outdir, "Images", "CASE123_overlay.png")
+  out_other <- file.path(outdir, "Images", "OTHER_overlay.png")
+  writeLines("x", out_match)
+  writeLines("y", out_other)
+
+  mock_cfg <- list(
+    backend = "local",
+    input = indir,
+    output = outdir,
+    tmp = tmpdir
+  )
+
+  staged <- with_mocked_bindings(
+    .cellseg_read_config = function() mock_cfg,
+    .package = "cloneid",
+    code = .stage_in("CASE123", file.path(tmpdir, "CASE123"))
+  )
+
+  expect_identical(basename(staged), "CASE123_10x_ph_bl.tif")
+  expect_true(file.exists(file.path(tmpdir, "CASE123", "CASE123_10x_ph_bl.tif")))
+
+  with_mocked_bindings(
+    .cellseg_read_config = function() mock_cfg,
+    .package = "cloneid",
+    code = .clear_out("CASE123")
+  )
+
+  expect_false(file.exists(out_match))
+  expect_true(file.exists(out_other))
+})
+
+test_that(".cellseg_list_output_files returns id-scoped files from the requested subdir", {
+  root <- tempfile("cellseg-list-")
+  dir.create(root)
+  indir <- file.path(root, "input")
+  outdir <- file.path(root, "output")
+  tmpdir <- file.path(root, "tmp")
+  dir.create(indir)
+  dir.create(outdir)
+  dir.create(tmpdir)
+  for (sub in .subs()) dir.create(file.path(outdir, sub), recursive = TRUE)
+
+  match_file <- file.path(outdir, "DetectionResults", "CASE123_pred.csv")
+  other_file <- file.path(outdir, "DetectionResults", "OTHER_pred.csv")
+  writeLines("x", match_file)
+  writeLines("y", other_file)
+
+  mock_cfg <- list(
+    backend = "local",
+    input = indir,
+    output = outdir,
+    tmp = tmpdir
+  )
+
+  files <- with_mocked_bindings(
+    .cellseg_read_config = function() mock_cfg,
+    .package = "cloneid",
+    code = .list_out("CASE123", "DetectionResults")
+  )
+
+  expect_identical(files, match_file)
 })
