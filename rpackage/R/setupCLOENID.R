@@ -1,4 +1,4 @@
-setupCLONEID = function(host = 'localhost', port = '3306', user = NA, password = NA, database="CLONEID", schemaScript = "CLONEID_schema.sql", cellseg_input = NA, cellseg_output = NA, cellseg_tmp = NA){
+setupCLONEID = function(host = 'localhost', port = '3306', user = NA, password = NA, database="CLONEID", schemaScript = "CLONEID_schema.sql", cellseg_input = NA, cellseg_output = NA, cellseg_tmp = NA, cellseg_backend = NA, cellseg_bucket = NA, cellseg_region = NA, cellseg_endpoint = NA, cellseg_input_prefix = NA, cellseg_output_prefix = NA){
     
     yaml_dir = paste0(system.file(package='cloneid'), '/config/config.yaml')
     yml = read_yaml(yaml_dir)
@@ -24,6 +24,12 @@ setupCLONEID = function(host = 'localhost', port = '3306', user = NA, password =
     if (!is.na(cellseg_input))  { yml$cellSegmentation$input  = cellseg_input  }
     if (!is.na(cellseg_output)) { yml$cellSegmentation$output = cellseg_output }
     if (!is.na(cellseg_tmp))    { yml$cellSegmentation$tmp    = cellseg_tmp    }
+    if (!is.na(cellseg_backend))       { yml$cellSegmentation$backend      = cellseg_backend }
+    if (!is.na(cellseg_bucket))        { yml$cellSegmentation$bucket       = cellseg_bucket }
+    if (!is.na(cellseg_region))        { yml$cellSegmentation$region       = cellseg_region }
+    if (!is.na(cellseg_endpoint))      { yml$cellSegmentation$endpoint     = cellseg_endpoint }
+    if (!is.na(cellseg_input_prefix))  { yml$cellSegmentation$inputPrefix  = cellseg_input_prefix }
+    if (!is.na(cellseg_output_prefix)) { yml$cellSegmentation$outputPrefix = cellseg_output_prefix }
 
     write_yaml(yml, yaml_dir)
 
