@@ -27,20 +27,14 @@ library(testthat)
 
 test_that(".cellseg_read_config defaults backend to local when absent", {
   with_mocked_bindings(
-    .read_yaml = NULL,
-    .package = "cloneid",
+    read_yaml = function(...) list(cellSegmentation = list(
+      input = "/tmp/input",
+      output = "/tmp/output",
+      tmp = "/tmp/tmp"
+    )),
+    .package = "yaml",
     code = {
-      mock_cfg <- list(cellSegmentation = list(
-        input = "/tmp/input",
-        output = "/tmp/output",
-        tmp = "/tmp/tmp"
-      ))
-
-      result <- with_mocked_bindings(
-        read_yaml = function(...) mock_cfg,
-        .package = "yaml",
-        code = .cfg()
-      )
+      result <- .cfg()
 
       expect_identical(result$backend, "local")
       expect_identical(result$input, "/tmp/input")
@@ -303,8 +297,8 @@ test_that(".cellseg_stage_inputs_to_tmp stages microscopy inputs and .cellseg_cl
   writeLines("x", src_match)
   writeLines("y", src_other)
 
-  out_match <- file.path(outdir, "Images", "CASE123_overlay.png")
-  out_other <- file.path(outdir, "Images", "OTHER_overlay.png")
+  out_match <- file.path(outdir, "Images", "CASE123_10x_ph_bl_overlay.png")
+  out_other <- file.path(outdir, "Images", "OTHER_10x_ph_bl_overlay.png")
   writeLines("x", out_match)
   writeLines("y", out_other)
 
@@ -345,8 +339,8 @@ test_that(".cellseg_list_output_files returns id-scoped files from the requested
   dir.create(tmpdir)
   for (sub in .subs()) dir.create(file.path(outdir, sub), recursive = TRUE)
 
-  match_file <- file.path(outdir, "DetectionResults", "CASE123_pred.csv")
-  other_file <- file.path(outdir, "DetectionResults", "OTHER_pred.csv")
+  match_file <- file.path(outdir, "DetectionResults", "CASE123_10x_ph_bl_pred.csv")
+  other_file <- file.path(outdir, "DetectionResults", "OTHER_10x_ph_bl_pred.csv")
   writeLines("x", match_file)
   writeLines("y", other_file)
 
@@ -507,9 +501,9 @@ test_that("s3 listing, deletion, and MRI lookup materialize permanent objects lo
     "inputs/CASE123_10x_ph_bl.tif",
     "outputs/Images/CASE123_t2_msk.nii",
     "outputs/Images/CASE123_10x_ph_bl_overlay.png",
-    "outputs/DetectionResults/CASE123_pred.csv",
-    "outputs/Annotations/CASE123_cellpose_count.csv",
-    "outputs/Confluency/CASE123_Confluency.csv"
+    "outputs/DetectionResults/CASE123_10x_ph_bl_pred.csv",
+    "outputs/Annotations/CASE123_10x_ph_bl_cellpose_count.csv",
+    "outputs/Confluency/CASE123_10x_ph_bl_Confluency.csv"
   )
   downloaded <- character(0)
   deleted <- character(0)
@@ -542,7 +536,7 @@ test_that("s3 listing, deletion, and MRI lookup materialize permanent objects lo
       expect_true(file.exists(file.path(tmpdir, "CASE123", "CASE123_10x_ph_bl.tif")))
 
       out_files <- .list_out("CASE123", "DetectionResults")
-      expect_identical(basename(out_files), "CASE123_pred.csv")
+      expect_identical(basename(out_files), "CASE123_10x_ph_bl_pred.csv")
       expect_true(file.exists(out_files))
 
       mri_masks <- .list_mri_masks("CASE123")
@@ -558,7 +552,7 @@ test_that("s3 listing, deletion, and MRI lookup materialize permanent objects lo
   )
 
   expect_true(any(grepl("^inputs/CASE123_10x_ph_bl\\.tif$", downloaded)))
-  expect_true(any(grepl("^outputs/DetectionResults/CASE123_pred\\.csv$", downloaded)))
+  expect_true(any(grepl("^outputs/DetectionResults/CASE123_10x_ph_bl_pred\\.csv$", downloaded)))
   expect_true(any(grepl("^outputs/Images/CASE123_t2_msk\\.nii$", downloaded)))
   expect_true(any(grepl("^outputs/Images/CASE123_10x_ph_bl_overlay\\.png$", deleted)))
   expect_true(any(grepl("^inputs/CASE123_10x_ph_bl\\.tif$", deleted)))

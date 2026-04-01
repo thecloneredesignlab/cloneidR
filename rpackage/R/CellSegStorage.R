@@ -514,11 +514,10 @@
 
 .cellseg_list_promoted_mri_masks <- function(id, config = .cellseg_read_config()) {
   files <- .cellseg_list_output_files(id, "Images", config = config)
-  grep(
+  files[grepl(
     pattern = paste0("^", id, "_(t1|t2|flair|pd).*_msk\\.nii$"),
-    x = files,
-    value = TRUE
-  )
+    x = basename(files)
+  )]
 }
 
 .cellseg_wait_for_analysis_output <- function(id, how_many, timeout = 120, config = .cellseg_read_config()) {
@@ -586,17 +585,17 @@
   if (.cellseg_is_s3(config)) {
     signal <- gsub("_cavity", "", signal)
     mask_files <- .cellseg_list_output_files(id, "Images", config = config)
-    mask_files <- grep(
+    mask_files <- mask_files[grep(
       pattern = paste0("^", id, "_", signal),
-      x = mask_files,
-      value = TRUE
+      x = basename(mask_files),
+      value = FALSE
+    )]
+    input_keys <- .cellseg_match_keys(
+      .cellseg_s3_list_keys(.cellseg_s3_input_prefix(config), config = config),
+      paste0("^", id, "_", signal, ".*\\.nii$")
     )
-    raw_files <- .cellseg_list_input_files(id, config = config)
-    raw_files <- grep(
-      pattern = paste0("^", id, "_", signal),
-      x = raw_files,
-      value = TRUE
-    )
+    raw_cache_dir <- .cellseg_s3_cache_dir("input", config = config, id = id)
+    raw_files <- .cellseg_s3_materialize_keys(input_keys, raw_cache_dir, config = config)
     return(list(mask = mask_files[1], raw = raw_files[1]))
   }
 
