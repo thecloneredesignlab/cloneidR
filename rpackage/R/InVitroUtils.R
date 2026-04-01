@@ -621,27 +621,7 @@ plotLiquidNitrogenBox <- function (rack, row) {
 # directories. Safe to call when stores are empty (no-op). Called by the portal's
 # IVU.R caller via cloneid:::.remove_id_artifacts() for compensating rollback.
 .remove_id_artifacts <- function(id, indir, outdir) {
-  del_in <- list.files(indir, pattern = paste0("^", id, "_([0-9]+x_ph|t1|t2|flair|pd)"), full.names = TRUE)
-  del_in <- grep("\\.tif$", del_in, value = TRUE, ignore.case = TRUE)
-  if (length(del_in) > 0) file.remove(del_in)
-  for (sub in c("DetectionResults", "Annotations", "Images", "Confluency", "Masks")) {
-    del_out <- list.files(file.path(outdir, sub),
-                          pattern = paste0("^", id, "_([0-9]+x_ph|t1|t2|flair|pd)"), full.names = TRUE)
-    if (length(del_out) > 0) file.remove(del_out)
-  }
-  invisible(NULL)
-}
-
-# Returns the canonical cell-segmentation paths from the package config.
-# Single parse point: both InVitroUtils.R and IVU.R use this helper
-# (IVU via cloneid:::.cellseg_paths()) so the YAML is never read in two places.
-.cellseg_paths <- function() {
-  yml <- yaml::read_yaml(paste0(system.file(package = 'cloneid'), '/config/config.yaml'))
-  list(
-    input  = paste0(normalizePath(yml$cellSegmentation$input),  "/"),
-    output = paste0(normalizePath(yml$cellSegmentation$output), "/"),
-    tmp    = normalizePath(yml$cellSegmentation$tmp)
-  )
+  .cellseg_delete_paths(id, indir, outdir)
 }
 
 .readCellSegmentationsOutput <- function(id, from, cellLine, dishSurfaceArea_cm2, cellCount, excludeOption, preprocessing=T, param=NULL){
@@ -666,11 +646,9 @@ plotLiquidNitrogenBox <- function (rack, row) {
   PREPROCESS_SCRIPT=grep("preprocessing.py",PYTHON_SCRIPTS, value = T)
   TISSUESEG_SCRIPT=grep("tissue_seg.py",PYTHON_SCRIPTS, value = T)
   QCSTATS_SCRIPT=grep("QC_Statistics.py",PYTHON_SCRIPTS, value = T)
-  suppressWarnings(dir.create(paste0(CELLSEGMENTATIONS_OUTDIR,"DetectionResults")))
-  suppressWarnings(dir.create(paste0(CELLSEGMENTATIONS_OUTDIR,"Annotations")))
-  suppressWarnings(dir.create(paste0(CELLSEGMENTATIONS_OUTDIR,"Images")))
-  suppressWarnings(dir.create(paste0(CELLSEGMENTATIONS_OUTDIR,"Confluency")))
-  suppressWarnings(dir.create(paste0(CELLSEGMENTATIONS_OUTDIR,"Masks"))) 
+  for (subdir in .cellseg_output_subdirs()) {
+    suppressWarnings(dir.create(paste0(CELLSEGMENTATIONS_OUTDIR, subdir)))
+  }
   # suppressWarnings(dir.create("~/Downloads/qpscript"))
   # suppressWarnings(dir.create(fileparts(QUPATH_PRJ)$pathstr))
   # qpversion = list.files("/Applications", pattern = "QuPath")
@@ -694,7 +672,7 @@ plotLiquidNitrogenBox <- function (rack, row) {
   f_i = grep(".tif$",f_i,value=T)
   file.copy(f_i, TMP_DIR)
   ## Delete output files from prior runs (anchored per-id pattern; all 5 subfolders):
-  for(subfolder in c("Annotations","Images","DetectionResults","Confluency","Masks")){
+  for(subfolder in .cellseg_output_subdirs()){
     f = list.files(paste0(CELLSEGMENTATIONS_OUTDIR,subfolder), pattern = paste0("^",id,"_([0-9]+x_ph|t1|t2|flair|pd)"), full.names = T)
     file.remove(f)
   }
@@ -871,10 +849,10 @@ plotLiquidNitrogenBox <- function (rack, row) {
     stop(paste0("Expected exactly 1 mask NIfTI for id ", id, "; found ", length(msk)))
   if (length(raw) != 1)
     stop(paste0("Expected exactly 1 raw NIfTI for id ", id, "; found ", length(raw)))
-  file.copy(raw[1], .cellseg$input)
-  file.copy(msk[1], paste0(.cellseg$output, "Images/"))
+  .cellseg_copy_to_input(raw[1])
+  .cellseg_copy_to_output(msk[1], "Images")
   if (length(cav) == 1)
-    file.copy(cav[1], paste0(.cellseg$output, "Images/"))
+    .cellseg_copy_to_output(cav[1], "Images")
 }
 
 .readMRISegmentationsOutput <- function(id, path2segmentationresults) {
@@ -919,15 +897,15 @@ plotLiquidNitrogenBox <- function (rack, row) {
     return()
   }
 
-  sapply(f,            function(x) file.copy(x, paste0(CELLSEGMENTATIONS_OUTDIR, "DetectionResults")))
-  sapply(f_a,          function(x) file.copy(x, paste0(CELLSEGMENTATIONS_OUTDIR, "Annotations")))
-  sapply(f_c,          function(x) file.copy(x, paste0(CELLSEGMENTATIONS_OUTDIR, "Confluency")))
-  sapply(cellPoseMsk,  function(x) file.copy(x, paste0(CELLSEGMENTATIONS_OUTDIR, "Masks")))
-  sapply(tissueSegMsk, function(x) file.copy(x, paste0(CELLSEGMENTATIONS_OUTDIR, "Confluency")))
-  sapply(cellPoseOut_img, function(x) file.copy(x, paste0(CELLSEGMENTATIONS_OUTDIR, "Images")))
+  .cellseg_copy_to_output(f, "DetectionResults")
+  .cellseg_copy_to_output(f_a, "Annotations")
+  .cellseg_copy_to_output(f_c, "Confluency")
+  .cellseg_copy_to_output(cellPoseMsk, "Masks")
+  .cellseg_copy_to_output(tissueSegMsk, "Confluency")
+  .cellseg_copy_to_output(cellPoseOut_img, "Images")
 
   if(moveSegmentationInputToo){
-    sapply(cellPoseIn_img, function(x) file.copy(x, CELLSEGMENTATIONS_INDIR))
+    .cellseg_copy_to_input(cellPoseIn_img)
   }
 }
 

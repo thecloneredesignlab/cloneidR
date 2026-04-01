@@ -7,6 +7,12 @@ mysqlConnection:
   schemaScript: CLONEID_schema.sql
 
 cellSegmentation:
+  backend: local
   input: ~/CellSegmentations/
   output: ~/CellSegmentations/output/
   tmp: ~/Downloads/tmp/
+  bucket:
+  region:
+  endpoint:
+  inputPrefix: inputs
+  outputPrefix: outputs
