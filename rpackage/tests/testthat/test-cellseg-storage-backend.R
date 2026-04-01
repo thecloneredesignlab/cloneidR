@@ -13,6 +13,10 @@ library(testthat)
 .stage_in<- cloneid:::.cellseg_stage_inputs_to_tmp
 .clear_out <- cloneid:::.cellseg_clear_output_files
 .list_out <- cloneid:::.cellseg_list_output_files
+.list_mri_transient <- cloneid:::.cellseg_list_mri_transient_files
+.validate_mri_transient <- cloneid:::.cellseg_validate_mri_transient_dir
+.promote_mri <- cloneid:::.cellseg_promote_mri_files
+.list_mri_masks <- cloneid:::.cellseg_list_promoted_mri_masks
 
 test_that(".cellseg_read_config defaults backend to local when absent", {
   with_mocked_bindings(
@@ -230,4 +234,81 @@ test_that(".cellseg_list_output_files returns id-scoped files from the requested
   )
 
   expect_identical(files, match_file)
+})
+
+test_that(".cellseg_validate_mri_transient_dir enforces local transient MRI input shape", {
+  root <- tempfile("cellseg-mri-transient-")
+  dir.create(root)
+
+  raw <- file.path(root, "CASE123_t2.nii")
+  mask <- file.path(root, "CASE123_t2_msk.nii")
+  cavity <- file.path(root, "CASE123_t2_cavity.nii")
+  writeLines("raw", raw)
+  writeLines("mask", mask)
+  writeLines("cavity", cavity)
+
+  files <- .validate_mri_transient("CASE123", root)
+
+  expect_identical(files$raw, raw)
+  expect_identical(files$mask, mask)
+  expect_identical(files$cavity, cavity)
+
+  bad <- file.path(root, "UNRELATED.txt")
+  writeLines("bad", bad)
+  expect_error(
+    .validate_mri_transient("CASE123", root),
+    "must match ingest regex"
+  )
+})
+
+test_that(".cellseg_promote_mri_files copies only durable MRI assets from transient local source", {
+  root <- tempfile("cellseg-mri-promote-")
+  dir.create(root)
+  indir <- file.path(root, "input")
+  outdir <- file.path(root, "output")
+  tmpdir <- file.path(root, "tmp")
+  transient_dir <- file.path(root, "transient")
+  dir.create(indir)
+  dir.create(outdir)
+  dir.create(tmpdir)
+  dir.create(transient_dir)
+  for (sub in .subs()) dir.create(file.path(outdir, sub), recursive = TRUE)
+
+  raw <- file.path(transient_dir, "CASE123_t2.nii")
+  mask <- file.path(transient_dir, "CASE123_t2_msk.nii")
+  cavity <- file.path(transient_dir, "CASE123_t2_cavity.nii")
+  writeLines("raw", raw)
+  writeLines("mask", mask)
+  writeLines("cavity", cavity)
+
+  mock_cfg <- list(
+    backend = "local",
+    input = indir,
+    output = outdir,
+    tmp = tmpdir
+  )
+
+  promoted <- with_mocked_bindings(
+    .cellseg_read_config = function() mock_cfg,
+    .package = "cloneid",
+    code = .promote_mri("CASE123", transient_dir)
+  )
+
+  expect_identical(promoted$raw, raw)
+  expect_identical(promoted$mask, mask)
+  expect_identical(promoted$cavity, cavity)
+  expect_true(file.exists(file.path(indir, basename(raw))))
+  expect_true(file.exists(file.path(outdir, "Images", basename(mask))))
+  expect_true(file.exists(file.path(outdir, "Images", basename(cavity))))
+  expect_true(file.exists(raw))
+  expect_true(file.exists(mask))
+  expect_true(file.exists(cavity))
+
+  promoted_masks <- with_mocked_bindings(
+    .cellseg_read_config = function() mock_cfg,
+    .package = "cloneid",
+    code = .list_mri_masks("CASE123")
+  )
+
+  expect_identical(promoted_masks, file.path(outdir, "Images", basename(mask)))
 })

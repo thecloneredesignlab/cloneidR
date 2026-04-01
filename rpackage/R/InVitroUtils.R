@@ -829,33 +829,13 @@ plotLiquidNitrogenBox <- function (rack, row) {
 # All deposited filenames match the unified ingest regex so .remove_id_artifacts
 # handles compensating rollback correctly.
 .move_mri_files <- function(TMP_DIR, id) {
-  .cellseg <- .cellseg_paths()
-  mri_regex <- paste0("^", id, "_(t1|t2|flair|pd)")
-  msk <- list.files(TMP_DIR, pattern = paste0(mri_regex, ".*_msk\\.nii"),  full.names = TRUE)
-  cav <- list.files(TMP_DIR, pattern = paste0(mri_regex, ".*_cavity\\.nii"), full.names = TRUE)
-  raw <- list.files(TMP_DIR, pattern = paste0(mri_regex, "\\.nii"),          full.names = TRUE)
-  # raw must not match mask or cavity files
-  raw <- raw[!grepl("_msk\\.nii|_cavity\\.nii", raw)]
-  if (length(msk) != 1)
-    stop(paste0("Expected exactly 1 mask NIfTI for id ", id, "; found ", length(msk)))
-  if (length(raw) != 1)
-    stop(paste0("Expected exactly 1 raw NIfTI for id ", id, "; found ", length(raw)))
-  .cellseg_copy_to_input(raw[1])
-  .cellseg_copy_to_output(msk[1], "Images")
-  if (length(cav) == 1)
-    .cellseg_copy_to_output(cav[1], "Images")
+  .cellseg_promote_mri_files(id, TMP_DIR)
 }
 
 .readMRISegmentationsOutput <- function(id, path2segmentationresults) {
-  ingest_regex <- paste0("^", id, "_([0-9]+x_ph|t1|t2|flair|pd)")
-  f_i <- list.files(path2segmentationresults, pattern = ingest_regex, full.names = TRUE)
-  if (length(f_i) != length(list.files(path2segmentationresults)))
-    stop(paste0("All files in (", path2segmentationresults,
-                ") must match ingest regex for id: ", id))
+  .cellseg_validate_mri_transient_dir(id, path2segmentationresults)
   .move_mri_files(path2segmentationresults, id)
-  msk_promoted <- list.files(paste0(.cellseg_paths()$output, "Images/"),
-                              pattern = paste0("^", id, "_(t1|t2|flair|pd).*_msk\\.nii"),
-                              full.names = TRUE)
+  msk_promoted <- .cellseg_list_promoted_mri_masks(id)
   if (length(msk_promoted) == 0)
     stop(paste0("Mask not found in OUTDIR/Images after promotion for id: ", id))
   nii    <- RNifti::readNifti(msk_promoted[1])

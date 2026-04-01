@@ -84,7 +84,7 @@
     stop("S3 cellSegmentation backend cleanup is not implemented yet.")
   }
 
-  paths <- .cellseg_paths()
+  paths <- c(.cellseg_durable_paths(config), list(tmp = .cellseg_tmp_dir(config)))
   .cellseg_delete_paths(id, paths$input, paths$output)
 }
 
@@ -106,7 +106,7 @@
     stop("S3 cellSegmentation output directory initialization is not implemented yet.")
   }
 
-  output_root <- .cellseg_paths()$output
+  output_root <- .cellseg_durable_paths(config)$output
   for (subdir in .cellseg_output_subdirs()) {
     suppressWarnings(dir.create(paste0(output_root, subdir)))
   }
@@ -119,7 +119,7 @@
     stop("S3 cellSegmentation input listing is not implemented yet.")
   }
 
-  input_root <- .cellseg_paths()$input
+  input_root <- .cellseg_durable_paths(config)$input
   files <- list.files(input_root, pattern = paste0("^", id, "_"), full.names = TRUE)
   files <- grep("x_ph_", files, value = TRUE)
   files <- grep("\\.tif$", files, value = TRUE, ignore.case = TRUE)
@@ -131,7 +131,7 @@
     stop("S3 cellSegmentation output cleanup is not implemented yet.")
   }
 
-  output_root <- .cellseg_paths()$output
+  output_root <- .cellseg_durable_paths(config)$output
   for (subfolder in .cellseg_output_subdirs()) {
     files <- list.files(
       paste0(output_root, subfolder),
@@ -165,11 +165,70 @@
     stop("S3 cellSegmentation output listing is not implemented yet.")
   }
 
-  output_root <- .cellseg_paths()$output
+  output_root <- .cellseg_durable_paths(config)$output
   list.files(
     paste0(output_root, subdir),
     pattern = .cellseg_ingest_pattern(id),
     full.names = TRUE
+  )
+}
+
+.cellseg_list_mri_transient_files <- function(id, transient_dir) {
+  mri_regex <- paste0("^", id, "_(t1|t2|flair|pd)")
+  list(
+    mask = list.files(transient_dir, pattern = paste0(mri_regex, ".*_msk\\.nii"), full.names = TRUE),
+    cavity = list.files(transient_dir, pattern = paste0(mri_regex, ".*_cavity\\.nii"), full.names = TRUE),
+    raw = {
+      raw <- list.files(transient_dir, pattern = paste0(mri_regex, "\\.nii"), full.names = TRUE)
+      raw[!grepl("_msk\\.nii|_cavity\\.nii", raw)]
+    }
+  )
+}
+
+.cellseg_validate_mri_transient_dir <- function(id, transient_dir) {
+  ingest_regex <- .cellseg_ingest_pattern(id)
+  matched <- list.files(transient_dir, pattern = ingest_regex, full.names = TRUE)
+  all_files <- list.files(transient_dir, full.names = TRUE)
+  if (length(matched) != length(all_files)) {
+    stop(paste0("All files in (", transient_dir, ") must match ingest regex for id: ", id))
+  }
+
+  files <- .cellseg_list_mri_transient_files(id, transient_dir)
+  if (length(files$mask) != 1) {
+    stop(paste0("Expected exactly 1 mask NIfTI for id ", id, "; found ", length(files$mask)))
+  }
+  if (length(files$raw) != 1) {
+    stop(paste0("Expected exactly 1 raw NIfTI for id ", id, "; found ", length(files$raw)))
+  }
+
+  files
+}
+
+.cellseg_promote_mri_files <- function(id, transient_dir, config = .cellseg_read_config()) {
+  if (.cellseg_is_s3(config)) {
+    stop("S3 cellSegmentation MRI promotion is not implemented yet.")
+  }
+
+  files <- .cellseg_validate_mri_transient_dir(id, transient_dir)
+  .cellseg_copy_to_input(files$raw[1], config = config)
+  .cellseg_copy_to_output(files$mask[1], "Images", config = config)
+  if (length(files$cavity) == 1) {
+    .cellseg_copy_to_output(files$cavity[1], "Images", config = config)
+  }
+
+  invisible(files)
+}
+
+.cellseg_list_promoted_mri_masks <- function(id, config = .cellseg_read_config()) {
+  if (.cellseg_is_s3(config)) {
+    stop("S3 cellSegmentation promoted MRI mask lookup is not implemented yet.")
+  }
+
+  files <- .cellseg_list_output_files(id, "Images", config = config)
+  grep(
+    pattern = paste0("^", id, "_(t1|t2|flair|pd).*_msk\\.nii$"),
+    x = files,
+    value = TRUE
   )
 }
 
@@ -178,7 +237,7 @@
     stop("S3 cellSegmentation output wait loop is not implemented yet.")
   }
 
-  output_root <- .cellseg_paths()$output
+  output_root <- .cellseg_durable_paths(config)$output
   print(paste0("Waiting for ", id, " to appear under ", output_root, " ..."), quote = FALSE)
 
   f_o <- character(0)
@@ -210,8 +269,8 @@
     stop("S3 cellSegmentation MRI file lookup is not implemented yet.")
   }
 
-  output_root <- .cellseg_paths()$output
-  input_root <- .cellseg_paths()$input
+  output_root <- .cellseg_durable_paths(config)$output
+  input_root <- .cellseg_durable_paths(config)$input
   signal <- gsub("_cavity", "", signal)
 
   list(
@@ -233,7 +292,7 @@
     stop("S3 cellSegmentation input promotion is not implemented yet.")
   }
 
-  .cellseg_copy_files(files, .cellseg_paths()$input)
+  .cellseg_copy_files(files, .cellseg_durable_paths(config)$input)
 }
 
 .cellseg_copy_to_output <- function(files, subdir, config = .cellseg_read_config()) {
@@ -241,5 +300,5 @@
     stop("S3 cellSegmentation output promotion is not implemented yet.")
   }
 
-  .cellseg_copy_files(files, paste0(.cellseg_paths()$output, subdir))
+  .cellseg_copy_files(files, paste0(.cellseg_durable_paths(config)$output, subdir))
 }
