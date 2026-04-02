@@ -1727,9 +1727,12 @@ pedigree_dist <- function(conn, ids, cellLine) {
 #' exposed in the returned inventory.
 #'
 #' @param export_ids   Character vector of Passaging.id values in the subtree.
-#' @param images_dir   Directory containing anchored subtree-associated image files.
+#' @param images_dir   Optional legacy local override for `Images/`-only discovery.
+#' @param config       Optional cell segmentation storage config. Defaults to the
+#'                     package-configured backend-aware storage config.
 #' @return data frame with columns: asset_id, passaging_id, asset_kind, label, file_count.
-.subtree_imaging_inventory <- function(export_ids, images_dir) {
+.subtree_imaging_inventory <- function(export_ids, images_dir = NULL,
+                                       config = .cellseg_read_config()) {
   out <- data.frame(
     asset_id          = character(0),
     passaging_id      = character(0),
@@ -1740,27 +1743,84 @@ pedigree_dist <- function(conn, ids, cellLine) {
   )
 
   if (length(export_ids) == 0 || is.null(images_dir) || !dir.exists(images_dir)) {
-    return(out)
+    if (!is.null(images_dir)) {
+      return(out)
+    }
   }
 
   .escape_regex <- function(x) gsub("([][{}()+*^$|\\\\?.])", "\\\\\\1", x)
 
-  for (node_id in export_ids) {
-    image_re <- paste0("^", .escape_regex(node_id), "_([0-9]+x_ph|t1|t2|flair|pd).*")
-    hits <- list.files(images_dir, pattern = image_re, ignore.case = TRUE, full.names = FALSE)
-    if (length(hits) == 0) next
+  if (!is.null(images_dir)) {
+    for (node_id in export_ids) {
+      image_re <- paste0("^", .escape_regex(node_id), "_([0-9]+x_ph|t1|t2|flair|pd).*")
+      hits <- list.files(images_dir, pattern = image_re, ignore.case = TRUE, full.names = FALSE)
+      if (length(hits) == 0) next
 
-    out <- rbind(
-      out,
-      data.frame(
-        asset_id         = paste0("img::", node_id, "::images"),
-        passaging_id     = as.character(node_id),
-        asset_kind       = "images",
-        label            = "Anchored image files",
-        file_count       = length(hits),
-        stringsAsFactors = FALSE
+      out <- rbind(
+        out,
+        data.frame(
+          asset_id         = paste0("img::", node_id, "::images"),
+          passaging_id     = as.character(node_id),
+          asset_kind       = "images",
+          label            = "Anchored image files",
+          file_count       = length(hits),
+          stringsAsFactors = FALSE
+        )
       )
+    }
+    return(out)
+  }
+
+  asset_specs <- list(
+    list(
+      asset_kind = "raw_input",
+      label = "Raw input files",
+      list_files = function(node_id) .cellseg_list_input_files(node_id, config = config)
+    ),
+    list(
+      asset_kind = "images",
+      label = "Anchored image files",
+      list_files = function(node_id) .cellseg_list_output_files(node_id, "Images", config = config)
+    ),
+    list(
+      asset_kind = "confluency",
+      label = "Confluency output files",
+      list_files = function(node_id) .cellseg_list_output_files(node_id, "Confluency", config = config)
+    ),
+    list(
+      asset_kind = "detection_results",
+      label = "Detection result files",
+      list_files = function(node_id) .cellseg_list_output_files(node_id, "DetectionResults", config = config)
+    ),
+    list(
+      asset_kind = "annotations",
+      label = "Annotation files",
+      list_files = function(node_id) .cellseg_list_output_files(node_id, "Annotations", config = config)
+    ),
+    list(
+      asset_kind = "masks",
+      label = "Mask image files",
+      list_files = function(node_id) .cellseg_list_output_files(node_id, "Masks", config = config)
     )
+  )
+
+  for (node_id in export_ids) {
+    for (spec in asset_specs) {
+      hits <- spec$list_files(node_id)
+      if (length(hits) == 0) next
+
+      out <- rbind(
+        out,
+        data.frame(
+          asset_id         = paste0("img::", node_id, "::", spec$asset_kind),
+          passaging_id     = as.character(node_id),
+          asset_kind       = spec$asset_kind,
+          label            = spec$label,
+          file_count       = length(hits),
+          stringsAsFactors = FALSE
+        )
+      )
+    }
   }
 
   out
@@ -1771,18 +1831,13 @@ pedigree_dist <- function(conn, ids, cellLine) {
 #'
 #' @param export_ids Character vector of Passaging.id values in the subtree.
 #' @param conn       Open DBI/RMySQL connection. Read-only.
-#' @param images_dir Optional imaging directory override. Defaults to the
-#'                   package-configured `CELLSEGMENTATIONS_OUTDIR/Images`.
+#' @param images_dir Optional legacy local override for `Images/`-only discovery.
+#' @param config     Optional cell segmentation storage config. Defaults to the
+#'                   package-configured backend-aware storage config.
 #' @return list with data frames: nodes, imaging, perspectives.
-.subtree_asset_inventory <- function(export_ids, conn, images_dir = NULL) {
-  if (is.null(images_dir)) {
-    images_dir <- tryCatch(
-      file.path(.cellseg_paths()$output, "Images"),
-      error = function(e) NULL
-    )
-  }
-
-  imaging_inv <- .subtree_imaging_inventory(export_ids, images_dir)
+.subtree_asset_inventory <- function(export_ids, conn, images_dir = NULL,
+                                     config = .cellseg_read_config()) {
+  imaging_inv <- .subtree_imaging_inventory(export_ids, images_dir, config = config)
   persp_inv   <- .subtree_perspective_inventory(export_ids, conn)
 
   node_rows <- lapply(export_ids, function(node_id) {

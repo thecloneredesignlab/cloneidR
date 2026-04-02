@@ -1114,7 +1114,13 @@ test_that("format='rds': manifest_template is valid YAML seeded with exported no
 
   with_mocked_bindings(
     .db_fetch = mock,
-    .cellseg_paths = function() list(output = root_dir),
+    .cellseg_list_input_files = function(id, config = NULL) character(0),
+    .cellseg_list_output_files = function(id, subdir, config = NULL) {
+      if (identical(id, "1") && identical(subdir, "Images")) {
+        return(file.path(root_dir, "Images", "1_10x_ph_day1_overlay.png"))
+      }
+      character(0)
+    },
     .package  = "cloneid",
     code = {
       result <- export_passaging_subtree_bundle(
@@ -1187,16 +1193,6 @@ test_that("format='rds': asset_inventory summarizes perspectives even when table
 })
 
 test_that("format='rds': imaging inventory discovers anchored microscopy and MRI image files and leaks no raw paths", {
-  root_dir <- tempfile("subtree_img_root_")
-  img_dir <- file.path(root_dir, "Images")
-  dir.create(img_dir, recursive = TRUE)
-  on.exit(unlink(root_dir, recursive = TRUE), add = TRUE)
-  file.create(file.path(img_dir, "abc_10x_ph_br_mask_overlay.tif"))
-  file.create(file.path(img_dir, "abc_flair_cavity.nii.gz"))
-  file.create(file.path(img_dir, "abcdef_10x_ph_day1_overlay.png"))
-  file.create(file.path(img_dir, "prefix_abc_10x_ph_day1_overlay.png"))
-  file.create(file.path(img_dir, "abc_result.csv"))
-
   mock <- function(stmt, conn = NULL) {
     if (grepl("WHERE id =", stmt)) return(data.frame(id = "abc", stringsAsFactors = FALSE))
     if (grepl("passaged_from_id1 =", stmt)) return(data.frame(id = character(0), stringsAsFactors = FALSE))
@@ -1215,7 +1211,35 @@ test_that("format='rds': imaging inventory discovers anchored microscopy and MRI
 
   with_mocked_bindings(
     .db_fetch = mock,
-    .cellseg_paths = function() list(output = root_dir),
+    .cellseg_list_input_files = function(id, config = NULL) {
+      if (identical(id, "abc")) {
+        return(c("s3://cloneid4mysql8/CellSegmentations/input/abc_t2.nii.gz"))
+      }
+      character(0)
+    },
+    .cellseg_list_output_files = function(id, subdir, config = NULL) {
+      if (!identical(id, "abc")) return(character(0))
+      switch(
+        subdir,
+        "Images" = c(
+          "s3://cloneid4mysql8/CellSegmentations/output/Images/abc_10x_ph_br_mask_overlay.tif",
+          "s3://cloneid4mysql8/CellSegmentations/output/Images/abc_flair_msk.nii.gz"
+        ),
+        "Confluency" = c(
+          "s3://cloneid4mysql8/CellSegmentations/output/Confluency/abc_10x_ph_br_Confluency.csv"
+        ),
+        "DetectionResults" = c(
+          "s3://cloneid4mysql8/CellSegmentations/output/DetectionResults/abc_10x_ph_br_pred.csv"
+        ),
+        "Annotations" = c(
+          "s3://cloneid4mysql8/CellSegmentations/output/Annotations/abc_10x_ph_br_annotations.csv"
+        ),
+        "Masks" = c(
+          "s3://cloneid4mysql8/CellSegmentations/output/Masks/abc_10x_ph_br_cp_masks.png"
+        ),
+        character(0)
+      )
+    },
     .package  = "cloneid",
     code = {
       result <- export_passaging_subtree_bundle(
@@ -1226,10 +1250,24 @@ test_that("format='rds': imaging inventory discovers anchored microscopy and MRI
         include_perspectives = FALSE
       )
       inv <- result$asset_inventory$imaging
-      expect_equal(nrow(inv), 1L)
-      expect_equal(inv$asset_id, "img::abc::images")
-      expect_equal(inv$file_count, 2L)
-      expect_false(any(grepl("Images|/", capture.output(str(inv)))))
+      expect_equal(
+        sort(inv$asset_id),
+        sort(c(
+          "img::abc::raw_input",
+          "img::abc::images",
+          "img::abc::confluency",
+          "img::abc::detection_results",
+          "img::abc::annotations",
+          "img::abc::masks"
+        ))
+      )
+      expect_equal(inv$file_count[inv$asset_id == "img::abc::raw_input"], 1L)
+      expect_equal(inv$file_count[inv$asset_id == "img::abc::images"], 2L)
+      expect_equal(inv$file_count[inv$asset_id == "img::abc::confluency"], 1L)
+      expect_equal(inv$file_count[inv$asset_id == "img::abc::detection_results"], 1L)
+      expect_equal(inv$file_count[inv$asset_id == "img::abc::annotations"], 1L)
+      expect_equal(inv$file_count[inv$asset_id == "img::abc::masks"], 1L)
+      expect_false(any(grepl("CellSegmentations|Images|Confluency|Masks|/", capture.output(str(inv)))))
     }
   )
 })
