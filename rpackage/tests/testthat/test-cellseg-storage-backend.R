@@ -302,6 +302,35 @@ test_that(".cellseg_delete_input_artifacts removes only matching input artifacts
   expect_false(file.exists(rm_in))
 })
 
+test_that(".cellseg_delete_input_artifacts ignores prefix-collision and invalid filenames", {
+  root <- tempfile("cellseg-delete-input-collision-")
+  dir.create(root)
+  indir <- file.path(root, "input")
+  dir.create(indir)
+
+  target <- file.path(indir, "CASE123_10x_ph_bl.tif")
+  keep_prefix_collision <- file.path(indir, "CASE1234_10x_ph_bl.tif")
+  keep_missing_separator <- file.path(indir, "CASE12310x_ph_bl.tif")
+  keep_wrong_modality <- file.path(indir, "CASE123_xx_ph_bl.tif")
+  keep_wrong_extension <- file.path(indir, "CASE123_10x_ph_bl.txt")
+  keep_other <- file.path(indir, "OTHER_10x_ph_bl.tif")
+
+  vapply(
+    c(target, keep_prefix_collision, keep_missing_separator, keep_wrong_modality, keep_wrong_extension, keep_other),
+    function(path) { writeLines("x", path); TRUE },
+    logical(1)
+  )
+
+  .delete_input("CASE123", indir)
+
+  expect_false(file.exists(target))
+  expect_true(file.exists(keep_prefix_collision))
+  expect_true(file.exists(keep_missing_separator))
+  expect_true(file.exists(keep_wrong_modality))
+  expect_true(file.exists(keep_wrong_extension))
+  expect_true(file.exists(keep_other))
+})
+
 test_that(".cellseg_delete_id_artifacts removes durable artifacts through package config and leaves tmp untouched", {
   root <- tempfile("cellseg-delete-artifacts-")
   dir.create(root)
@@ -336,6 +365,42 @@ test_that(".cellseg_delete_id_artifacts removes durable artifacts through packag
   expect_false(file.exists(durable_in))
   expect_false(file.exists(durable_out))
   expect_true(file.exists(transient_tmp))
+})
+
+test_that(".cellseg_delete_paths removes only exact id-scoped durable artifacts across subdirs", {
+  root <- tempfile("cellseg-delete-paths-exact-")
+  dir.create(root)
+  indir <- file.path(root, "input")
+  outdir <- file.path(root, "output")
+  dir.create(indir)
+  dir.create(outdir)
+  for (sub in .subs()) dir.create(file.path(outdir, sub), recursive = TRUE)
+
+  target_in <- file.path(indir, "CASE123_10x_ph_bl.tif")
+  keep_in_prefix_collision <- file.path(indir, "CASE1234_10x_ph_bl.tif")
+  keep_in_wrong_signal <- file.path(indir, "CASE123_xx_ph_bl.tif")
+  writeLines("x", target_in)
+  writeLines("x", keep_in_prefix_collision)
+  writeLines("x", keep_in_wrong_signal)
+
+  target_out <- file.path(outdir, "Images", "CASE123_10x_ph_bl_overlay.png")
+  keep_out_prefix_collision <- file.path(outdir, "Images", "CASE1234_10x_ph_bl_overlay.png")
+  keep_out_missing_separator <- file.path(outdir, "Images", "CASE12310x_ph_bl_overlay.png")
+  keep_other_subdir <- file.path(outdir, "Masks", "OTHER_10x_ph_bl_cp_masks.png")
+  writeLines("y", target_out)
+  writeLines("y", keep_out_prefix_collision)
+  writeLines("y", keep_out_missing_separator)
+  writeLines("y", keep_other_subdir)
+
+  .deletep("CASE123", indir, outdir)
+
+  expect_false(file.exists(target_in))
+  expect_false(file.exists(target_out))
+  expect_true(file.exists(keep_in_prefix_collision))
+  expect_true(file.exists(keep_in_wrong_signal))
+  expect_true(file.exists(keep_out_prefix_collision))
+  expect_true(file.exists(keep_out_missing_separator))
+  expect_true(file.exists(keep_other_subdir))
 })
 
 test_that(".remove_id_artifacts respects explicit caller-supplied durable roots", {
@@ -772,6 +837,115 @@ test_that("s3 durable artifact listing returns canonical s3 uris", {
       output_uris <- .list_output_artifacts("CASE123", "Images")
       expect_identical(input_uris, "s3://cloneid4mysql8/inputs/CASE123_10x_ph_bl.tif")
       expect_identical(output_uris, "s3://cloneid4mysql8/outputs/Images/CASE123_10x_ph_bl_overlay.png")
+    }
+  )
+})
+
+test_that("s3 durable cleanup deletes only exact id-scoped keys under explicit roots", {
+  deleted <- character(0)
+
+  with_mocked_bindings(
+    .cellseg_read_config = function() list(
+      backend = "s3",
+      tmp = tempdir(),
+      bucket = "WRONG_BUCKET",
+      inputPrefix = "wrong-inputs",
+      outputPrefix = "wrong-outputs"
+    ),
+    .cellseg_s3_list_keys = function(prefix, config) {
+      switch(prefix,
+        "portal-inputs" = c(
+          "portal-inputs/CASE123_10x_ph_bl.tif",
+          "portal-inputs/CASE1234_10x_ph_bl.tif",
+          "portal-inputs/CASE12310x_ph_bl.tif",
+          "portal-inputs/CASE123_xx_ph_bl.tif",
+          "portal-inputs/OTHER_10x_ph_bl.tif"
+        ),
+        "portal-outputs/Images" = c(
+          "portal-outputs/Images/CASE123_10x_ph_bl_overlay.png",
+          "portal-outputs/Images/CASE1234_10x_ph_bl_overlay.png",
+          "portal-outputs/Images/CASE12310x_ph_bl_overlay.png",
+          "portal-outputs/Images/OTHER_10x_ph_bl_overlay.png"
+        ),
+        "portal-outputs/DetectionResults" = c(
+          "portal-outputs/DetectionResults/CASE123_10x_ph_bl.csv",
+          "portal-outputs/DetectionResults/CASE1234_10x_ph_bl.csv"
+        ),
+        "portal-outputs/Annotations" = c(
+          "portal-outputs/Annotations/CASE123_10x_ph_bl.csv",
+          "portal-outputs/Annotations/CASE1234_10x_ph_bl.csv"
+        ),
+        "portal-outputs/Confluency" = c(
+          "portal-outputs/Confluency/CASE123_10x_ph_bl.csv",
+          "portal-outputs/Confluency/CASE1234_10x_ph_bl.csv"
+        ),
+        "portal-outputs/Masks" = c(
+          "portal-outputs/Masks/CASE123_10x_ph_bl_cp_masks.png",
+          "portal-outputs/Masks/CASE1234_10x_ph_bl_cp_masks.png"
+        ),
+        character(0)
+      )
+    },
+    .cellseg_s3_delete_key = function(key, config) {
+      deleted <<- c(deleted, paste(config$bucket, key, sep = "::"))
+      TRUE
+    },
+    .package = "cloneid",
+    code = .deletep("CASE123", "s3://RIGHT_BUCKET/portal-inputs/", "s3://RIGHT_BUCKET/portal-outputs/")
+  )
+
+  expect_true(any(deleted == "RIGHT_BUCKET::portal-inputs/CASE123_10x_ph_bl.tif"))
+  expect_true(any(deleted == "RIGHT_BUCKET::portal-outputs/Images/CASE123_10x_ph_bl_overlay.png"))
+  expect_true(any(deleted == "RIGHT_BUCKET::portal-outputs/DetectionResults/CASE123_10x_ph_bl.csv"))
+  expect_true(any(deleted == "RIGHT_BUCKET::portal-outputs/Annotations/CASE123_10x_ph_bl.csv"))
+  expect_true(any(deleted == "RIGHT_BUCKET::portal-outputs/Confluency/CASE123_10x_ph_bl.csv"))
+  expect_true(any(deleted == "RIGHT_BUCKET::portal-outputs/Masks/CASE123_10x_ph_bl_cp_masks.png"))
+
+  expect_false(any(grepl("CASE1234_", deleted, fixed = TRUE)))
+  expect_false(any(grepl("CASE12310x_", deleted, fixed = TRUE)))
+  expect_false(any(grepl("CASE123_xx_", deleted, fixed = TRUE)))
+  expect_false(any(grepl("OTHER_", deleted, fixed = TRUE)))
+})
+
+test_that("s3 durable artifact listing ignores prefix-collision and invalid keys", {
+  mock_cfg <- list(
+    backend = "s3",
+    tmp = tempdir(),
+    bucket = "cloneid4mysql8",
+    inputPrefix = "inputs",
+    outputPrefix = "outputs"
+  )
+
+  with_mocked_bindings(
+    .cellseg_read_config = function() mock_cfg,
+    .cellseg_s3_list_keys = function(prefix, config) {
+      switch(prefix,
+        "inputs" = c(
+          "inputs/CASE123_10x_ph_bl.tif",
+          "inputs/CASE1234_10x_ph_bl.tif",
+          "inputs/CASE12310x_ph_bl.tif",
+          "inputs/CASE123_xx_ph_bl.tif",
+          "inputs/OTHER_10x_ph_bl.tif"
+        ),
+        "outputs/Images" = c(
+          "outputs/Images/CASE123_10x_ph_bl_overlay.png",
+          "outputs/Images/CASE1234_10x_ph_bl_overlay.png",
+          "outputs/Images/CASE12310x_ph_bl_overlay.png",
+          "outputs/Images/OTHER_10x_ph_bl_overlay.png"
+        ),
+        character(0)
+      )
+    },
+    .package = "cloneid",
+    code = {
+      expect_identical(
+        .list_input_artifacts("CASE123"),
+        "s3://cloneid4mysql8/inputs/CASE123_10x_ph_bl.tif"
+      )
+      expect_identical(
+        .list_output_artifacts("CASE123", "Images"),
+        "s3://cloneid4mysql8/outputs/Images/CASE123_10x_ph_bl_overlay.png"
+      )
     }
   )
 })
