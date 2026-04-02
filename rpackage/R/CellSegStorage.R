@@ -484,11 +484,11 @@
 .cellseg_list_mri_transient_files <- function(id, transient_dir) {
   mri_regex <- paste0("^", id, "_(t1|t2|flair|pd)")
   list(
-    mask = list.files(transient_dir, pattern = paste0(mri_regex, ".*_msk\\.nii"), full.names = TRUE),
-    cavity = list.files(transient_dir, pattern = paste0(mri_regex, ".*_cavity\\.nii"), full.names = TRUE),
+    mask = list.files(transient_dir, pattern = paste0(mri_regex, ".*_msk\\.nii(\\.gz)?$"), full.names = TRUE),
+    cavity = list.files(transient_dir, pattern = paste0(mri_regex, ".*_cavity\\.nii(\\.gz)?$"), full.names = TRUE),
     raw = {
-      raw <- list.files(transient_dir, pattern = paste0(mri_regex, "\\.nii"), full.names = TRUE)
-      raw[!grepl("_msk\\.nii|_cavity\\.nii", raw)]
+      raw <- list.files(transient_dir, pattern = paste0(mri_regex, "\\.nii(\\.gz)?$"), full.names = TRUE)
+      raw[!grepl("_msk\\.nii(\\.gz)?$|_cavity\\.nii(\\.gz)?$", raw)]
     }
   )
 }
@@ -526,7 +526,7 @@
 .cellseg_list_promoted_mri_masks <- function(id, config = .cellseg_read_config()) {
   files <- .cellseg_list_output_files(id, "Images", config = config)
   files[grepl(
-    pattern = paste0("^", id, "_(t1|t2|flair|pd).*_msk\\.nii$"),
+    pattern = paste0("^", id, "_(t1|t2|flair|pd).*_msk\\.nii(\\.gz)?$"),
     x = basename(files)
   )]
 }
@@ -603,7 +603,7 @@
     )]
     input_keys <- .cellseg_match_keys(
       .cellseg_s3_list_keys(.cellseg_s3_input_prefix(config), config = config),
-      paste0("^", id, "_", signal, ".*\\.nii$")
+      paste0("^", id, "_", signal, ".*\\.nii(\\.gz)?$")
     )
     raw_cache_dir <- .cellseg_s3_cache_dir("input", config = config, id = id)
     raw_files <- .cellseg_s3_materialize_keys(input_keys, raw_cache_dir, config = config)

@@ -654,6 +654,48 @@ test_that(".cellseg_promote_mri_files copies only durable MRI assets from transi
   expect_identical(promoted_masks, file.path(outdir, "Images", basename(mask)))
 })
 
+test_that(".cellseg_list_promoted_mri_masks supports compressed MRI masks", {
+  root <- tempfile("cellseg-mri-promote-gz-")
+  dir.create(root)
+  indir <- file.path(root, "input")
+  outdir <- file.path(root, "output")
+  tmpdir <- file.path(root, "tmp")
+  transient_dir <- file.path(root, "transient")
+  dir.create(indir)
+  dir.create(outdir)
+  dir.create(tmpdir)
+  dir.create(transient_dir)
+  for (sub in .subs()) dir.create(file.path(outdir, sub), recursive = TRUE)
+
+  raw <- file.path(transient_dir, "CASE123_t2.nii.gz")
+  mask <- file.path(transient_dir, "CASE123_t2_msk.nii.gz")
+  cavity <- file.path(transient_dir, "CASE123_t2_cavity.nii.gz")
+  writeLines("raw", raw)
+  writeLines("mask", mask)
+  writeLines("cavity", cavity)
+
+  mock_cfg <- list(
+    backend = "local",
+    input = indir,
+    output = outdir,
+    tmp = tmpdir
+  )
+
+  with_mocked_bindings(
+    .cellseg_read_config = function() mock_cfg,
+    .package = "cloneid",
+    code = .promote_mri("CASE123", transient_dir)
+  )
+
+  promoted_masks <- with_mocked_bindings(
+    .cellseg_read_config = function() mock_cfg,
+    .package = "cloneid",
+    code = .list_mri_masks("CASE123")
+  )
+
+  expect_identical(promoted_masks, file.path(outdir, "Images", basename(mask)))
+})
+
 test_that("s3 MRI promotion uploads only durable assets from the local transient source", {
   root <- tempfile("cellseg-mri-promote-s3-")
   dir.create(root)
