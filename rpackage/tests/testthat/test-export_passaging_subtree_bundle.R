@@ -777,6 +777,47 @@ test_that(".fetch_dependency_closure: all-NA FK columns produce zero-row result 
   )
 })
 
+test_that(".subtree_imaging_inventory uses artifact APIs for backend-aware discovery", {
+  with_mocked_bindings(
+    .cellseg_list_input_files = function(...) stop("materializing input API should not be used"),
+    .cellseg_list_output_files = function(...) stop("materializing output API should not be used"),
+    .cellseg_list_input_artifacts = function(id, config = NULL) {
+      if (identical(id, "ID1")) "s3://bucket/input/ID1_10x_ph_tr.tif" else character(0)
+    },
+    .cellseg_list_output_artifacts = function(id, subdir, output_root = NULL, config = NULL) {
+      if (!identical(id, "ID1")) {
+        return(character(0))
+      }
+      switch(
+        subdir,
+        Images = "s3://bucket/output/Images/ID1_10x_ph_tr_overlay.png",
+        Confluency = c(
+          "s3://bucket/output/Confluency/ID1_10x_ph_tr.csv",
+          "s3://bucket/output/Confluency/ID1_10x_ph_tr_mask.png"
+        ),
+        DetectionResults = "s3://bucket/output/DetectionResults/ID1_10x_ph_tr.csv",
+        Annotations = "s3://bucket/output/Annotations/ID1_10x_ph_tr.csv",
+        Masks = "s3://bucket/output/Masks/ID1_10x_ph_tr_cp_masks.png",
+        character(0)
+      )
+    },
+    .package = "cloneid",
+    code = {
+      inv <- cloneid:::.subtree_imaging_inventory(
+        export_ids = c("ID1", "ID2"),
+        config = list(backend = "s3")
+      )
+
+      expect_equal(
+        inv$asset_kind,
+        c("raw_input", "images", "confluency", "detection_results", "annotations", "masks")
+      )
+      expect_equal(inv$file_count, c(1L, 1L, 2L, 1L, 1L, 1L))
+      expect_true(all(inv$passaging_id == "ID1"))
+    }
+  )
+})
+
 # ---------------------------------------------------------------------------
 # .fetch_perspective_closure
 # ---------------------------------------------------------------------------

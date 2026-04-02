@@ -1775,32 +1775,32 @@ pedigree_dist <- function(conn, ids, cellLine) {
     list(
       asset_kind = "raw_input",
       label = "Raw input files",
-      list_files = function(node_id) .cellseg_list_input_files(node_id, config = config)
+      list_files = function(node_id) .cellseg_list_input_artifacts(node_id, config = config)
     ),
     list(
       asset_kind = "images",
       label = "Anchored image files",
-      list_files = function(node_id) .cellseg_list_output_files(node_id, "Images", config = config)
+      list_files = function(node_id) .cellseg_list_output_artifacts(node_id, "Images", config = config)
     ),
     list(
       asset_kind = "confluency",
       label = "Confluency output files",
-      list_files = function(node_id) .cellseg_list_output_files(node_id, "Confluency", config = config)
+      list_files = function(node_id) .cellseg_list_output_artifacts(node_id, "Confluency", config = config)
     ),
     list(
       asset_kind = "detection_results",
       label = "Detection result files",
-      list_files = function(node_id) .cellseg_list_output_files(node_id, "DetectionResults", config = config)
+      list_files = function(node_id) .cellseg_list_output_artifacts(node_id, "DetectionResults", config = config)
     ),
     list(
       asset_kind = "annotations",
       label = "Annotation files",
-      list_files = function(node_id) .cellseg_list_output_files(node_id, "Annotations", config = config)
+      list_files = function(node_id) .cellseg_list_output_artifacts(node_id, "Annotations", config = config)
     ),
     list(
       asset_kind = "masks",
       label = "Mask image files",
-      list_files = function(node_id) .cellseg_list_output_files(node_id, "Masks", config = config)
+      list_files = function(node_id) .cellseg_list_output_artifacts(node_id, "Masks", config = config)
     )
   )
 
