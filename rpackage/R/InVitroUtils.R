@@ -1771,6 +1771,68 @@ pedigree_dist <- function(conn, ids, cellLine) {
     return(out)
   }
 
+  if (.cellseg_is_s3(config)) {
+    s3_specs <- list(
+      list(
+        asset_kind = "raw_input",
+        label = "Raw input files",
+        keys = .cellseg_s3_list_keys(.cellseg_s3_input_prefix(config), config = config),
+        pattern = .cellseg_input_artifact_pattern
+      ),
+      list(
+        asset_kind = "images",
+        label = "Anchored image files",
+        keys = .cellseg_s3_list_keys(.cellseg_s3_output_prefix("Images", config), config = config),
+        pattern = .cellseg_ingest_pattern
+      ),
+      list(
+        asset_kind = "confluency",
+        label = "Confluency output files",
+        keys = .cellseg_s3_list_keys(.cellseg_s3_output_prefix("Confluency", config), config = config),
+        pattern = .cellseg_ingest_pattern
+      ),
+      list(
+        asset_kind = "detection_results",
+        label = "Detection result files",
+        keys = .cellseg_s3_list_keys(.cellseg_s3_output_prefix("DetectionResults", config), config = config),
+        pattern = .cellseg_ingest_pattern
+      ),
+      list(
+        asset_kind = "annotations",
+        label = "Annotation files",
+        keys = .cellseg_s3_list_keys(.cellseg_s3_output_prefix("Annotations", config), config = config),
+        pattern = .cellseg_ingest_pattern
+      ),
+      list(
+        asset_kind = "masks",
+        label = "Mask image files",
+        keys = .cellseg_s3_list_keys(.cellseg_s3_output_prefix("Masks", config), config = config),
+        pattern = .cellseg_ingest_pattern
+      )
+    )
+
+    for (node_id in export_ids) {
+      for (spec in s3_specs) {
+        hits <- .cellseg_match_keys(spec$keys, spec$pattern(node_id))
+        if (length(hits) == 0) next
+
+        out <- rbind(
+          out,
+          data.frame(
+            asset_id         = paste0("img::", node_id, "::", spec$asset_kind),
+            passaging_id     = as.character(node_id),
+            asset_kind       = spec$asset_kind,
+            label            = spec$label,
+            file_count       = length(hits),
+            stringsAsFactors = FALSE
+          )
+        )
+      }
+    }
+
+    return(out)
+  }
+
   asset_specs <- list(
     list(
       asset_kind = "raw_input",

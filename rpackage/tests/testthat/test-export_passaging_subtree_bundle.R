@@ -818,6 +818,73 @@ test_that(".subtree_imaging_inventory uses artifact APIs for backend-aware disco
   )
 })
 
+test_that(".subtree_imaging_inventory lists each s3 prefix once per export", {
+  listed_prefixes <- character(0)
+
+  with_mocked_bindings(
+    .cellseg_is_s3 = function(config = NULL) TRUE,
+    .cellseg_list_input_artifacts = function(...) stop("artifact API should not be called in batched s3 mode"),
+    .cellseg_list_output_artifacts = function(...) stop("artifact API should not be called in batched s3 mode"),
+    .cellseg_s3_input_prefix = function(config = NULL) "CellSegmentations/input",
+    .cellseg_s3_output_prefix = function(subdir = NULL, config = NULL) {
+      file.path("CellSegmentations/output", subdir)
+    },
+    .cellseg_s3_list_keys = function(prefix, config = NULL) {
+      listed_prefixes <<- c(listed_prefixes, prefix)
+      switch(
+        prefix,
+        "CellSegmentations/input" = c(
+          "CellSegmentations/input/ID1_10x_ph_tr.tif",
+          "CellSegmentations/input/ID2_10x_ph_tr.tif"
+        ),
+        "CellSegmentations/output/Images" = c(
+          "CellSegmentations/output/Images/ID1_10x_ph_tr_overlay.png",
+          "CellSegmentations/output/Images/ID2_10x_ph_tr_overlay.png"
+        ),
+        "CellSegmentations/output/Confluency" = c(
+          "CellSegmentations/output/Confluency/ID1_10x_ph_tr.csv",
+          "CellSegmentations/output/Confluency/ID2_10x_ph_tr.csv"
+        ),
+        "CellSegmentations/output/DetectionResults" = character(0),
+        "CellSegmentations/output/Annotations" = character(0),
+        "CellSegmentations/output/Masks" = character(0),
+        stop(paste("Unexpected prefix:", prefix))
+      )
+    },
+    .package = "cloneid",
+    code = {
+      inv <- cloneid:::.subtree_imaging_inventory(
+        export_ids = c("ID1", "ID2"),
+        config = list(backend = "s3")
+      )
+
+      expect_equal(
+        sort(unique(listed_prefixes)),
+        c(
+          "CellSegmentations/input",
+          "CellSegmentations/output/Annotations",
+          "CellSegmentations/output/Confluency",
+          "CellSegmentations/output/DetectionResults",
+          "CellSegmentations/output/Images",
+          "CellSegmentations/output/Masks"
+        )
+      )
+      expect_equal(length(listed_prefixes), 6L)
+      expect_equal(
+        inv$asset_id,
+        c(
+          "img::ID1::raw_input",
+          "img::ID1::images",
+          "img::ID1::confluency",
+          "img::ID2::raw_input",
+          "img::ID2::images",
+          "img::ID2::confluency"
+        )
+      )
+    }
+  )
+})
+
 # ---------------------------------------------------------------------------
 # .fetch_perspective_closure
 # ---------------------------------------------------------------------------
