@@ -1888,6 +1888,83 @@ pedigree_dist <- function(conn, ids, cellLine) {
   out
 }
 
+.phenotype_inventory_label <- function(asset_kind) {
+  switch(
+    asset_kind,
+    raw_input = "Raw input files",
+    images = "Anchored image files",
+    confluency = "Confluency output files",
+    detection_results = "Detection result files",
+    annotations = "Annotation files",
+    masks = "Mask image files",
+    paste("Phenotype asset:", asset_kind)
+  )
+}
+
+.phenotype_inventory_cache_path <- function(config_file = Sys.getenv("CAPI_CONFIG_FILE", Sys.getenv("CONFIG_FILE", ""))) {
+  if (!nzchar(config_file) || !file.exists(config_file)) {
+    return(NULL)
+  }
+
+  cfg <- yaml::read_yaml(config_file)
+  storage_cfg <- if (tolower(Sys.getenv("CAPI_INPROD", "false")) == "true") cfg$storage$prod else cfg$storage$dev
+  store_root <- storage_cfg$store
+  if (is.null(store_root) || !nzchar(trimws(store_root))) {
+    return(NULL)
+  }
+
+  file.path(store_root, "data", "cache", "PhenotypeAssetInventory@daily.yaml")
+}
+
+.load_cached_phenotype_inventory <- function(path = .phenotype_inventory_cache_path()) {
+  if (is.null(path) || !file.exists(path)) {
+    return(NULL)
+  }
+
+  doc <- yaml::read_yaml(path)
+  rows <- doc$rows
+  if (is.null(rows) || length(rows) == 0) {
+    return(data.frame(
+      asset_id = character(0),
+      passaging_id = character(0),
+      asset_kind = character(0),
+      label = character(0),
+      file_count = integer(0),
+      stringsAsFactors = FALSE
+    ))
+  }
+
+  inv <- do.call(rbind, lapply(rows, function(row) {
+    passaging_id <- as.character(row$passagingId %||% row$passaging_id %||% "")
+    asset_kind <- as.character(row$assetKind %||% row$asset_kind %||% "")
+    file_count <- as.integer(row$fileCount %||% row$file_count %||% 0L)
+    if (!nzchar(passaging_id) || !nzchar(asset_kind)) {
+      return(NULL)
+    }
+    data.frame(
+      asset_id = paste0("img::", passaging_id, "::", asset_kind),
+      passaging_id = passaging_id,
+      asset_kind = asset_kind,
+      label = .phenotype_inventory_label(asset_kind),
+      file_count = file_count,
+      stringsAsFactors = FALSE
+    )
+  }))
+
+  if (is.null(inv)) {
+    return(data.frame(
+      asset_id = character(0),
+      passaging_id = character(0),
+      asset_kind = character(0),
+      label = character(0),
+      file_count = integer(0),
+      stringsAsFactors = FALSE
+    ))
+  }
+
+  inv[order(inv$passaging_id, inv$asset_kind), , drop = FALSE]
+}
+
 
 #' Combine subtree asset inventories into a manifest-facing structure.
 #'
@@ -1896,10 +1973,16 @@ pedigree_dist <- function(conn, ids, cellLine) {
 #' @param images_dir Optional legacy local override for `Images/`-only discovery.
 #' @param config     Optional cell segmentation storage config. Defaults to the
 #'                   package-configured backend-aware storage config.
+#' @param imaging_inventory_override Optional precomputed imaging inventory data frame.
 #' @return list with data frames: nodes, imaging, perspectives.
 .subtree_asset_inventory <- function(export_ids, conn, images_dir = NULL,
-                                     config = .cellseg_read_config()) {
-  imaging_inv <- .subtree_imaging_inventory(export_ids, images_dir, config = config)
+                                     config = .cellseg_read_config(),
+                                     imaging_inventory_override = NULL) {
+  imaging_inv <- if (!is.null(imaging_inventory_override)) {
+    imaging_inventory_override[imaging_inventory_override$passaging_id %in% export_ids, , drop = FALSE]
+  } else {
+    .subtree_imaging_inventory(export_ids, images_dir, config = config)
+  }
   persp_inv   <- .subtree_perspective_inventory(export_ids, conn)
 
   node_rows <- lapply(export_ids, function(node_id) {
@@ -2318,6 +2401,7 @@ export_passaging_subtree_bundle <- function(
     recursive              = FALSE,
     include_storage        = TRUE,
     include_perspectives   = TRUE,
+    imaging_inventory_override = NULL,
     decode_profiles_recursive = FALSE,
     conn                   = NULL,
     external_parent_policy = c("nullify", "include", "error")) {
@@ -2399,7 +2483,11 @@ export_passaging_subtree_bundle <- function(
   # This is always included in the returned bundle, even when Perspective rows
   # themselves are excluded from the lightweight export.
   # -------------------------------------------------------------------------
-  asset_inventory   <- .subtree_asset_inventory(export_ids, conn = conn)
+  asset_inventory   <- .subtree_asset_inventory(
+    export_ids,
+    conn = conn,
+    imaging_inventory_override = imaging_inventory_override
+  )
   manifest_template <- .subtree_manifest_template(id, asset_inventory)
 
   # -------------------------------------------------------------------------

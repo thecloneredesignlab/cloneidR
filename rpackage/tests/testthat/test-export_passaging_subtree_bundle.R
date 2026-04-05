@@ -193,6 +193,41 @@ test_that(".rows_to_inserts: non-blob character column with blob_cols specified 
   expect_match(stmts, "0x41", fixed = TRUE)
 })
 
+test_that(".subtree_asset_inventory uses imaging_inventory_override without live imaging scan", {
+  override <- data.frame(
+    asset_id = c("img::A::images", "img::B::masks"),
+    passaging_id = c("A", "B"),
+    asset_kind = c("images", "masks"),
+    label = c("Anchored image files", "Mask image files"),
+    file_count = c(2L, 1L),
+    stringsAsFactors = FALSE
+  )
+
+  perspective_rows <- data.frame(
+    passaging_id = character(0),
+    perspective_type = character(0),
+    row_count = integer(0),
+    stringsAsFactors = FALSE
+  )
+
+  with_mocked_bindings(
+    .subtree_imaging_inventory = function(...) {
+      stop("live imaging inventory should not be called")
+    },
+    .subtree_perspective_inventory = function(export_ids, conn) perspective_rows,
+    .package = "cloneid",
+    code = {
+      inv <- cloneid:::.subtree_asset_inventory(
+        export_ids = c("A"),
+        conn = mc,
+        imaging_inventory_override = override
+      )
+      expect_equal(inv$imaging$asset_id, "img::A::images")
+      expect_equal(inv$imaging$file_count, 2L)
+    }
+  )
+})
+
 # ---------------------------------------------------------------------------
 # .subtree_ids
 # ---------------------------------------------------------------------------
