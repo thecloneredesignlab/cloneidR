@@ -630,7 +630,11 @@
 
 .cellseg_copy_to_input <- function(files, config = .cellseg_read_config()) {
   if (.cellseg_is_s3(config)) {
-    keys <- .cellseg_s3_join(.cellseg_s3_input_prefix(config), basename(files))
+    keys <- vapply(
+      basename(files),
+      function(name) .cellseg_s3_join(.cellseg_s3_input_prefix(config), name),
+      character(1)
+    )
     ok <- vapply(
       seq_along(files),
       function(i) .cellseg_s3_upload_file(files[i], keys[i], config = config),
@@ -647,7 +651,11 @@
 
 .cellseg_copy_to_output <- function(files, subdir, config = .cellseg_read_config()) {
   if (.cellseg_is_s3(config)) {
-    keys <- .cellseg_s3_join(.cellseg_s3_output_prefix(subdir, config), basename(files))
+    keys <- vapply(
+      basename(files),
+      function(name) .cellseg_s3_join(.cellseg_s3_output_prefix(subdir, config), name),
+      character(1)
+    )
     ok <- vapply(
       seq_along(files),
       function(i) .cellseg_s3_upload_file(files[i], keys[i], config = config),
