@@ -1,0 +1,301 @@
+---
+title: "CLONEID primary use case figure reproduction"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+params:
+  subtree_rds: "input/subtree/subtree_SNU-668_dp_A9_seedT2.rds"
+  panel_a_zip: "input/subtree/panelA.zip"
+  panel_de_zip: "input/subtree/panelDE.zip"
+  manifest_a_yaml: "input/manifest_A/manifest_panel_A.yaml"
+  manifest_de_yaml: "input/manifest_DE/manifest_panel_DE.yaml"
+  output_panels_dir: "output/panels"
+  output_final_dir: "output/final"
+  cache_dir: "cache"
+  root_dir: "."
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+```{r init}
+source(file.path(params$root_dir, "R", "io.R"))
+source(file.path(params$root_dir, "R", "panel_bc.R"))
+source(file.path(params$root_dir, "R", "panel_ade.R"))
+
+paths <- cloneid_figure_paths(
+  root_dir = params$root_dir,
+  subtree_rds = params$subtree_rds,
+  panel_a_zip = params$panel_a_zip,
+  panel_de_zip = params$panel_de_zip,
+  manifest_a_yaml = params$manifest_a_yaml,
+  manifest_de_yaml = params$manifest_de_yaml,
+  output_panels_dir = params$output_panels_dir,
+  output_final_dir = params$output_final_dir,
+  cache_dir = params$cache_dir
+)
+
+status <- describe_primary_figure_inputs(paths)
+status
+```
+
+```{r derive-manifests}
+panel_a_manifest <- derive_panel_a_manifest(
+  subtree_rds = paths$subtree_rds,
+  output_yaml = paths$manifest_a_yaml
+)
+
+panel_de_manifest <- derive_panel_de_manifest(
+  subtree_rds = paths$subtree_rds,
+  output_yaml = paths$manifest_de_yaml
+)
+
+status <- describe_primary_figure_inputs(paths)
+```
+
+# Scope
+
+This workflow is intended to reproduce the manuscript figure:
+
+```
+CLONEID links event history, growth dynamics and karyotypic state in a longitudinal adaptation experiment.
+```
+
+The scaffold is organized around the approved panel split:
+
+- `A`: circular phylogeny rooted at `SNU-668_K3_A24_seedT4`, with one first-available cropped overlay per node from `panelA.zip`
+- `B`: daily cell counts and fitted growth curves for `r`- and `K`-selected replicate lineages
+- `C1-C4`: trend lines for growth rate and observed maximum population size, split by `r` versus `K`
+- `D/E`: late genome-derived summaries from the whole-subtree manifest export
+
+# Input status
+
+```{r input-status}
+knitr::kable(status, align = "ll")
+```
+
+# Manual portal steps
+
+Render this document first. It will regenerate the two manifest YAML files from the subtree bundle and place them in the configured input directories.
+
+```{r manual-steps}
+knitr::kable(manual_portal_steps(paths), align = "ll")
+```
+
+The intended manual sequence is:
+
+1. Ensure `input/subtree/subtree_SNU-668_dp_A9_seedT2.rds` is present.
+2. Render this `.Rmd` to regenerate:
+   - `input/manifest_A/manifest_panel_A.yaml`
+   - `input/manifest_DE/manifest_panel_DE.yaml`
+3. Upload `manifest_panel_A.yaml` in the portal and copy the resulting `panelA.zip` into `input/subtree/`.
+4. Upload `manifest_panel_DE.yaml` in the portal and copy the resulting `panelDE.zip` into `input/subtree/`.
+5. Re-render the `.Rmd` once `panelA.zip` and `panelDE.zip` are present.
+
+# Downloaded archive verification
+
+If manifest-driven downloads have been copied into `input/subtree/` as `panel*.zip`, this block checks whether their contents match the expected panel targets.
+
+```{r panel-zip-verification}
+panel_zip_check <- verify_panel_zip_contents(
+  zip_dir = file.path(params$root_dir, "input", "subtree"),
+  panel_a_manifest = panel_a_manifest,
+  panel_de_manifest = panel_de_manifest
+)
+
+knitr::kable(panel_zip_check$summary, align = "llllll")
+```
+
+```{r panel-zip-missing-targets}
+if (length(panel_zip_check$details) > 0) {
+  for (detail in panel_zip_check$details) {
+    cat("\n\n###", basename(detail$zip_file), "\n\n")
+    cat("Detected panel:", detail$detected_panel, "\n\n")
+    if (length(detail$missing_targets) == 0) {
+      cat("All expected targets were detected.\n")
+    } else {
+      print(detail$missing_targets)
+    }
+  }
+} else {
+  cat("No panel*.zip files found under input/subtree/.\n")
+}
+```
+
+# Panel B/C data inspection
+
+```{r subtree-summary}
+subtree_summary <- summarize_subtree_for_growth(paths$subtree_rds)
+subtree_summary$bundle_overview
+```
+
+```{r bc-ready-check}
+bc_inputs <- inspect_bc_inputs(paths$subtree_rds)
+bc_inputs$summary
+```
+
+# Panel A
+
+```{r panel-a0-preview, fig.width=4, fig.height=12}
+plot_panel_a0(paths$subtree_rds)
+```
+
+```{r panel-a-manifest-preview}
+knitr::kable(utils::head(panel_a_manifest, 12), align = "ll")
+```
+
+```{r panel-a-status}
+panel_a_status(paths$manifest_a_yaml, paths$panel_a_zip)
+```
+
+```{r panel-a-render}
+panel_a_outputs <- tryCatch(
+  save_panel_a_outputs(
+    subtree_rds = paths$subtree_rds,
+    root_dir = params$root_dir,
+    panel_a_zip = paths$panel_a_zip,
+    output_panels_dir = paths$output_panels_dir,
+    cache_dir = paths$cache_dir
+  ),
+  error = function(e) e
+)
+
+if (inherits(panel_a_outputs, "error")) {
+  cat("Panel A rendering not available yet:", conditionMessage(panel_a_outputs), "\n")
+} else {
+  knitr::kable(panel_a_outputs$files, align = "ll")
+}
+```
+
+```{r panel-a-preview, fig.width=10, fig.height=10}
+if (!inherits(panel_a_outputs, "error")) {
+  plot_panel_a(
+    subtree_rds = paths$subtree_rds,
+    panel_a_zip = paths$panel_a_zip,
+    cache_dir = paths$cache_dir
+  )
+}
+```
+
+```{r panel-a-overlays}
+if (!inherits(panel_a_outputs, "error")) {
+  knitr::kable(utils::head(panel_a_outputs$overlay_map, 12), align = "ll")
+}
+```
+
+# Panel B
+
+```{r panel-b-render}
+bc_outputs <- save_bc_outputs(
+  subtree_rds = paths$subtree_rds,
+  output_panels_dir = paths$output_panels_dir,
+  cache_dir = paths$cache_dir
+)
+
+panel_b_status()
+```
+
+# Panel C
+
+```{r panel-b-selected-passages}
+knitr::kable(bc_outputs$panel_b_data$selected_passages, align = "ll")
+```
+
+```{r panel-b-artifacts}
+knitr::kable(bc_outputs$files, align = "ll")
+```
+
+```{r panel-b-preview, fig.width=14, fig.height=6.5}
+plot_panel_b(bc_outputs$panel_b_data)
+```
+
+```{r panel-c-placeholder}
+panel_c_status()
+```
+
+```{r panel-c-preview, fig.width=12, fig.height=10}
+draw_panel_c_combined(bc_outputs$panel_c_plots)
+```
+
+```{r panel-c-metrics-head}
+knitr::kable(utils::head(bc_outputs$metrics, 12), align = "lllllll")
+```
+
+# Panel D/E placeholder
+
+```{r panel-de-manifest-preview}
+knitr::kable(panel_de_manifest, align = "ll")
+```
+
+```{r panel-de-placeholder}
+panel_de_status(paths$manifest_de_yaml, paths$panel_de_zip)
+```
+
+```{r panel-de-render}
+de_outputs <- tryCatch(
+  save_de_outputs(
+    root_dir = params$root_dir,
+    panel_de_zip = paths$panel_de_zip,
+    output_panels_dir = paths$output_panels_dir,
+    cache_dir = paths$cache_dir
+  ),
+  error = function(e) e
+)
+
+if (inherits(de_outputs, "error")) {
+  print(de_outputs)
+  cat("Panel D/E rendering not available yet:", conditionMessage(de_outputs), "\n")
+} else {
+  knitr::kable(de_outputs$files, align = "ll")
+}
+```
+
+```{r panel-d-preview, fig.width=8, fig.height=5}
+if (!inherits(de_outputs, "error")) {
+  de_outputs$panel_d_plot
+}
+```
+
+```{r panel-e-preview, fig.width=12, fig.height=5.5}
+if (!inherits(de_outputs, "error")) {
+  grid::grid.newpage()
+  grid::grid.draw(de_outputs$panel_e_plot$gtable)
+}
+```
+
+# Final assembly
+
+```{r final-assembly-render}
+final_outputs <- tryCatch(
+  assemble_primary_use_case_figure(
+    output_panels_dir = paths$output_panels_dir,
+    output_final_dir = paths$output_final_dir,
+    subtree_rds = paths$subtree_rds,
+    panel_a_zip = paths$panel_a_zip,
+    cache_dir = paths$cache_dir
+  ),
+  error = function(e) e
+)
+
+if (inherits(final_outputs, "error")) {
+  cat("Final assembly not available yet:", conditionMessage(final_outputs), "\n")
+} else {
+  knitr::kable(final_outputs$files, align = "ll")
+}
+```
+
+```{r final-assembly-status}
+final_assembly_status(paths$output_panels_dir, paths$output_final_dir)
+```
+
+```{r final-assembly-preview, fig.width=16, fig.height=22}
+if (!inherits(final_outputs, "error")) {
+  knitr::include_graphics(final_outputs$output_png)
+}
+```
