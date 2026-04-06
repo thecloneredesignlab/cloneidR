@@ -46,17 +46,32 @@ status
 ```
 
 ```{r derive-manifests}
-panel_a_manifest <- derive_panel_a_manifest(
-  subtree_rds = paths$subtree_rds,
-  output_yaml = paths$manifest_a_yaml
-)
+if (file.exists(paths$subtree_rds)) {
+  panel_a_manifest <- derive_panel_a_manifest(
+    subtree_rds = paths$subtree_rds,
+    output_yaml = paths$manifest_a_yaml
+  )
 
-panel_de_manifest <- derive_panel_de_manifest(
-  subtree_rds = paths$subtree_rds,
-  output_yaml = paths$manifest_de_yaml
-)
+  panel_de_manifest <- derive_panel_de_manifest(
+    subtree_rds = paths$subtree_rds,
+    output_yaml = paths$manifest_de_yaml
+  )
 
-status <- describe_primary_figure_inputs(paths)
+  status <- describe_primary_figure_inputs(paths)
+} else {
+  panel_a_manifest <- data.frame(
+    note = "Manifest generation skipped: missing subtree RDS bundle.",
+    stringsAsFactors = FALSE
+  )
+  panel_de_manifest <- data.frame(
+    note = "Manifest generation skipped: missing subtree RDS bundle.",
+    stringsAsFactors = FALSE
+  )
+  cat(
+    "Missing required input:", paths$subtree_rds, "\n",
+    "Download the subtree .rds bundle from dev.cloneid.org first, then re-render to generate the panel A and panel D/E manifests.\n"
+  )
+}
 ```
 
 # Scope
@@ -80,6 +95,36 @@ The scaffold is organized around the approved panel split:
 knitr::kable(status, align = "ll")
 ```
 
+```{r missing-input-notices, results='asis'}
+missing_inputs <- character()
+if (!file.exists(paths$subtree_rds)) {
+  missing_inputs <- c(
+    missing_inputs,
+    sprintf("- Missing subtree bundle: `%s`", paths$subtree_rds)
+  )
+}
+if (!file.exists(paths$panel_a_zip)) {
+  missing_inputs <- c(
+    missing_inputs,
+    sprintf("- Missing Panel A archive: `%s`", paths$panel_a_zip)
+  )
+}
+if (!file.exists(paths$panel_de_zip)) {
+  missing_inputs <- c(
+    missing_inputs,
+    sprintf("- Missing Panel D/E archive: `%s`", paths$panel_de_zip)
+  )
+}
+
+if (length(missing_inputs) == 0) {
+  cat("All required input files are present.\n")
+} else {
+  cat("## Missing required inputs\n\n")
+  cat(paste(missing_inputs, collapse = "\n"), "\n\n")
+  cat("Render can still proceed to generate status tables and any manifests allowed by the available inputs, but panel rendering will be skipped until the missing files are supplied.\n")
+}
+```
+
 # Manual portal steps
 
 Render this document first. It will regenerate the two manifest YAML files from the subtree bundle and place them in the configured input directories.
@@ -94,8 +139,8 @@ The intended manual sequence is:
 2. Render this `.Rmd` to regenerate:
    - `input/manifest_A/manifest_panel_A.yaml`
    - `input/manifest_DE/manifest_panel_DE.yaml`
-3. Upload `manifest_panel_A.yaml` in the portal and copy the resulting `panelA.zip` into `input/subtree/`.
-4. Upload `manifest_panel_DE.yaml` in the portal and copy the resulting `panelDE.zip` into `input/subtree/`.
+3. Upload `manifest_panel_A.yaml` to dev.cloneid.org and copy the resulting `panelA.zip` into `input/subtree/`.
+4. Upload `manifest_panel_DE.yaml` to dev.cloneid.org and copy the resulting `panelDE.zip` into `input/subtree/`.
 5. Re-render the `.Rmd` once `panelA.zip` and `panelDE.zip` are present.
 
 # Downloaded archive verification
@@ -103,13 +148,18 @@ The intended manual sequence is:
 If manifest-driven downloads have been copied into `input/subtree/` as `panel*.zip`, this block checks whether their contents match the expected panel targets.
 
 ```{r panel-zip-verification}
-panel_zip_check <- verify_panel_zip_contents(
-  zip_dir = file.path(params$root_dir, "input", "subtree"),
-  panel_a_manifest = panel_a_manifest,
-  panel_de_manifest = panel_de_manifest
-)
+if (file.exists(paths$subtree_rds)) {
+  panel_zip_check <- verify_panel_zip_contents(
+    zip_dir = file.path(params$root_dir, "input", "subtree"),
+    panel_a_manifest = panel_a_manifest,
+    panel_de_manifest = panel_de_manifest
+  )
 
-knitr::kable(panel_zip_check$summary, align = "llllll")
+  knitr::kable(panel_zip_check$summary, align = "llllll")
+} else {
+  panel_zip_check <- list(details = list())
+  cat("Zip verification skipped because the subtree .rds bundle is missing and manifests could not be generated.\n")
+}
 ```
 
 ```{r panel-zip-missing-targets}
@@ -131,19 +181,31 @@ if (length(panel_zip_check$details) > 0) {
 # Panel B/C data inspection
 
 ```{r subtree-summary}
-subtree_summary <- summarize_subtree_for_growth(paths$subtree_rds)
-subtree_summary$bundle_overview
+if (file.exists(paths$subtree_rds)) {
+  subtree_summary <- summarize_subtree_for_growth(paths$subtree_rds)
+  subtree_summary$bundle_overview
+} else {
+  cat("Panel B/C data inspection skipped because the subtree .rds bundle is missing.\n")
+}
 ```
 
 ```{r bc-ready-check}
-bc_inputs <- inspect_bc_inputs(paths$subtree_rds)
-bc_inputs$summary
+if (file.exists(paths$subtree_rds)) {
+  bc_inputs <- inspect_bc_inputs(paths$subtree_rds)
+  bc_inputs$summary
+} else {
+  cat("Panel B/C readiness check skipped because the subtree .rds bundle is missing.\n")
+}
 ```
 
 # Panel A
 
 ```{r panel-a0-preview, fig.width=4, fig.height=12}
-plot_panel_a0(paths$subtree_rds)
+if (file.exists(paths$subtree_rds)) {
+  plot_panel_a0(paths$subtree_rds)
+} else {
+  cat("Panel A0 preview skipped because the subtree .rds bundle is missing.\n")
+}
 ```
 
 ```{r panel-a-manifest-preview}
@@ -155,26 +217,33 @@ panel_a_status(paths$manifest_a_yaml, paths$panel_a_zip)
 ```
 
 ```{r panel-a-render}
-panel_a_outputs <- tryCatch(
-  save_panel_a_outputs(
-    subtree_rds = paths$subtree_rds,
-    root_dir = params$root_dir,
-    panel_a_zip = paths$panel_a_zip,
-    output_panels_dir = paths$output_panels_dir,
-    cache_dir = paths$cache_dir
-  ),
-  error = function(e) e
-)
-
-if (inherits(panel_a_outputs, "error")) {
-  cat("Panel A rendering not available yet:", conditionMessage(panel_a_outputs), "\n")
+panel_a_outputs <- NULL
+if (!file.exists(paths$subtree_rds)) {
+  cat("Panel A rendering not available yet: missing subtree .rds bundle at", paths$subtree_rds, "\n")
+} else if (!file.exists(paths$panel_a_zip)) {
+  cat("Panel A rendering not available yet: missing panelA.zip archive at", paths$panel_a_zip, "\n")
 } else {
-  knitr::kable(panel_a_outputs$files, align = "ll")
+  panel_a_outputs <- tryCatch(
+    save_panel_a_outputs(
+      subtree_rds = paths$subtree_rds,
+      root_dir = params$root_dir,
+      panel_a_zip = paths$panel_a_zip,
+      output_panels_dir = paths$output_panels_dir,
+      cache_dir = paths$cache_dir
+    ),
+    error = function(e) e
+  )
+
+  if (inherits(panel_a_outputs, "error")) {
+    cat("Panel A rendering not available yet:", conditionMessage(panel_a_outputs), "\n")
+  } else {
+    knitr::kable(panel_a_outputs$files, align = "ll")
+  }
 }
 ```
 
 ```{r panel-a-preview, fig.width=10, fig.height=10}
-if (!inherits(panel_a_outputs, "error")) {
+if (!is.null(panel_a_outputs) && !inherits(panel_a_outputs, "error")) {
   plot_panel_a(
     subtree_rds = paths$subtree_rds,
     panel_a_zip = paths$panel_a_zip,
@@ -184,7 +253,7 @@ if (!inherits(panel_a_outputs, "error")) {
 ```
 
 ```{r panel-a-overlays}
-if (!inherits(panel_a_outputs, "error")) {
+if (!is.null(panel_a_outputs) && !inherits(panel_a_outputs, "error")) {
   knitr::kable(utils::head(panel_a_outputs$overlay_map, 12), align = "ll")
 }
 ```
@@ -192,39 +261,56 @@ if (!inherits(panel_a_outputs, "error")) {
 # Panel B
 
 ```{r panel-b-render}
-bc_outputs <- save_bc_outputs(
-  subtree_rds = paths$subtree_rds,
-  output_panels_dir = paths$output_panels_dir,
-  cache_dir = paths$cache_dir
-)
+bc_outputs <- NULL
+if (!file.exists(paths$subtree_rds)) {
+  cat("Panel B/C rendering not available yet: missing subtree .rds bundle at", paths$subtree_rds, "\n")
+} else {
+  bc_outputs <- save_bc_outputs(
+    subtree_rds = paths$subtree_rds,
+    output_panels_dir = paths$output_panels_dir,
+    cache_dir = paths$cache_dir
+  )
 
-panel_b_status()
+  panel_b_status()
+}
 ```
 
 # Panel C
 
 ```{r panel-b-selected-passages}
-knitr::kable(bc_outputs$panel_b_data$selected_passages, align = "ll")
+if (!is.null(bc_outputs)) {
+  knitr::kable(bc_outputs$panel_b_data$selected_passages, align = "ll")
+}
 ```
 
 ```{r panel-b-artifacts}
-knitr::kable(bc_outputs$files, align = "ll")
+if (!is.null(bc_outputs)) {
+  knitr::kable(bc_outputs$files, align = "ll")
+}
 ```
 
 ```{r panel-b-preview, fig.width=14, fig.height=6.5}
-plot_panel_b(bc_outputs$panel_b_data)
+if (!is.null(bc_outputs)) {
+  plot_panel_b(bc_outputs$panel_b_data)
+}
 ```
 
 ```{r panel-c-placeholder}
-panel_c_status()
+if (!is.null(bc_outputs)) {
+  panel_c_status()
+}
 ```
 
 ```{r panel-c-preview, fig.width=12, fig.height=10}
-draw_panel_c_combined(bc_outputs$panel_c_plots)
+if (!is.null(bc_outputs)) {
+  draw_panel_c_combined(bc_outputs$panel_c_plots)
+}
 ```
 
 ```{r panel-c-metrics-head}
-knitr::kable(utils::head(bc_outputs$metrics, 12), align = "lllllll")
+if (!is.null(bc_outputs)) {
+  knitr::kable(utils::head(bc_outputs$metrics, 12), align = "lllllll")
+}
 ```
 
 # Panel D/E placeholder
@@ -238,32 +324,36 @@ panel_de_status(paths$manifest_de_yaml, paths$panel_de_zip)
 ```
 
 ```{r panel-de-render}
-de_outputs <- tryCatch(
-  save_de_outputs(
-    root_dir = params$root_dir,
-    panel_de_zip = paths$panel_de_zip,
-    output_panels_dir = paths$output_panels_dir,
-    cache_dir = paths$cache_dir
-  ),
-  error = function(e) e
-)
-
-if (inherits(de_outputs, "error")) {
-  print(de_outputs)
-  cat("Panel D/E rendering not available yet:", conditionMessage(de_outputs), "\n")
+de_outputs <- NULL
+if (!file.exists(paths$panel_de_zip)) {
+  cat("Panel D/E rendering not available yet: missing panelDE.zip archive at", paths$panel_de_zip, "\n")
 } else {
-  knitr::kable(de_outputs$files, align = "ll")
+  de_outputs <- tryCatch(
+    save_de_outputs(
+      root_dir = params$root_dir,
+      panel_de_zip = paths$panel_de_zip,
+      output_panels_dir = paths$output_panels_dir,
+      cache_dir = paths$cache_dir
+    ),
+    error = function(e) e
+  )
+
+  if (inherits(de_outputs, "error")) {
+    cat("Panel D/E rendering not available yet:", conditionMessage(de_outputs), "\n")
+  } else {
+    knitr::kable(de_outputs$files, align = "ll")
+  }
 }
 ```
 
 ```{r panel-d-preview, fig.width=8, fig.height=5}
-if (!inherits(de_outputs, "error")) {
+if (!is.null(de_outputs) && !inherits(de_outputs, "error")) {
   de_outputs$panel_d_plot
 }
 ```
 
 ```{r panel-e-preview, fig.width=12, fig.height=5.5}
-if (!inherits(de_outputs, "error")) {
+if (!is.null(de_outputs) && !inherits(de_outputs, "error")) {
   grid::grid.newpage()
   grid::grid.draw(de_outputs$panel_e_plot$gtable)
 }
@@ -272,21 +362,32 @@ if (!inherits(de_outputs, "error")) {
 # Final assembly
 
 ```{r final-assembly-render}
-final_outputs <- tryCatch(
-  assemble_primary_use_case_figure(
-    output_panels_dir = paths$output_panels_dir,
-    output_final_dir = paths$output_final_dir,
-    subtree_rds = paths$subtree_rds,
-    panel_a_zip = paths$panel_a_zip,
-    cache_dir = paths$cache_dir
-  ),
-  error = function(e) e
-)
-
-if (inherits(final_outputs, "error")) {
-  cat("Final assembly not available yet:", conditionMessage(final_outputs), "\n")
+final_outputs <- NULL
+if (!file.exists(paths$subtree_rds)) {
+  cat("Final assembly not available yet: missing subtree .rds bundle at", paths$subtree_rds, "\n")
+} else if (!file.exists(paths$panel_a_zip)) {
+  cat("Final assembly not available yet: missing panelA.zip archive at", paths$panel_a_zip, "\n")
+} else if (is.null(bc_outputs)) {
+  cat("Final assembly not available yet: panel B/C outputs have not been rendered because the subtree bundle is missing or panel B/C rendering was skipped.\n")
+} else if (is.null(de_outputs) || inherits(de_outputs, "error")) {
+  cat("Final assembly not available yet: panel D/E outputs have not been rendered because panelDE.zip is missing or panel D/E rendering failed.\n")
 } else {
-  knitr::kable(final_outputs$files, align = "ll")
+  final_outputs <- tryCatch(
+    assemble_primary_use_case_figure(
+      output_panels_dir = paths$output_panels_dir,
+      output_final_dir = paths$output_final_dir,
+      subtree_rds = paths$subtree_rds,
+      panel_a_zip = paths$panel_a_zip,
+      cache_dir = paths$cache_dir
+    ),
+    error = function(e) e
+  )
+
+  if (inherits(final_outputs, "error")) {
+    cat("Final assembly not available yet:", conditionMessage(final_outputs), "\n")
+  } else {
+    knitr::kable(final_outputs$files, align = "ll")
+  }
 }
 ```
 
@@ -295,7 +396,7 @@ final_assembly_status(paths$output_panels_dir, paths$output_final_dir)
 ```
 
 ```{r final-assembly-preview, fig.width=16, fig.height=22}
-if (!inherits(final_outputs, "error")) {
+if (!is.null(final_outputs) && !inherits(final_outputs, "error")) {
   knitr::include_graphics(final_outputs$output_png)
 }
 ```
