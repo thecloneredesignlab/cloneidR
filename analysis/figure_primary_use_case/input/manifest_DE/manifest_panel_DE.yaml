@@ -1,0 +1,40 @@
+manifest_version: 1
+bundle_root_id: SNU-668_dp_A9_seedT2
+request_email: ''
+options:
+  include_base_bundle: yes
+  package_format: zip
+  layout: by_node
+nodes:
+  - passaging_id: SNU-668_C_A24_seed
+    perspectives:
+      - GenomePerspective
+    imaging: []
+  - passaging_id: SNU-668_C_A4_seed
+    perspectives:
+      - GenomePerspective
+    imaging: []
+  - passaging_id: SNU-668_K1_A34_seedT1
+    perspectives:
+      - GenomePerspective
+    imaging: []
+  - passaging_id: SNU-668_K2_A34_seedT1
+    perspectives:
+      - GenomePerspective
+    imaging: []
+  - passaging_id: SNU-668_K3_A34_seedT1
+    perspectives:
+      - GenomePerspective
+    imaging: []
+  - passaging_id: SNU-668_r1_A55_seedT1
+    perspectives:
+      - GenomePerspective
+    imaging: []
+  - passaging_id: SNU-668_r2_A55_seedT1
+    perspectives:
+      - GenomePerspective
+    imaging: []
+  - passaging_id: SNU-668_r3_A55_seedT1
+    perspectives:
+      - GenomePerspective
+    imaging: []

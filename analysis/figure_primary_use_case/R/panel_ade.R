@@ -1,4 +1,4 @@
-panel_a_root_id <- "SNU-668_K3_A24_seedT4"
+panel_b_root_id <- "SNU-668_K3_A24_seedT4"
 
 panel_de_selected_nodes <- c(
   "SNU-668_C_A24_seed",
@@ -22,8 +22,8 @@ panel_de_lineage_colors <- c(
   "SNU-668_r3_A55_seedT1" = "#e08214"
 )
 
-derive_panel_a_manifest <- function(subtree_rds,
-                                    root_id = panel_a_root_id,
+derive_panel_b_manifest <- function(subtree_rds,
+                                    root_id = panel_b_root_id,
                                     output_yaml) {
   x <- read_subtree_bundle(subtree_rds)
   p <- x[["tables"]][["Passaging"]]
@@ -111,24 +111,24 @@ manual_portal_steps <- function(paths) {
   )
 }
 
-panel_a_status <- function(manifest_a_yaml, panel_a_zip) {
+panel_b_status <- function(manifest_a_yaml, panel_a_zip) {
   data.frame(
-    panel = "A",
+    panel = "B",
     status = if (file.exists(manifest_a_yaml) && file.exists(panel_a_zip)) "download_ready_for_render" else if (file.exists(manifest_a_yaml)) "manifest_ready_awaiting_downloaded_export" else "awaiting_manifest_generation",
     note = paste(
-      "Panel A requires the curated manifest rooted at SNU-668_K3_A24_seedT4",
+      "Panel B requires the curated manifest rooted at SNU-668_K3_A24_seedT4",
       "and the downloaded overlay export zip."
     ),
     stringsAsFactors = FALSE
   )
 }
 
-panel_de_status <- function(manifest_de_yaml, panel_de_zip) {
+panel_ef_status <- function(manifest_de_yaml, panel_de_zip) {
   data.frame(
-    panel = "D/E",
+    panel = "E/F",
     status = if (file.exists(manifest_de_yaml) && file.exists(panel_de_zip)) "download_ready_for_render" else if (file.exists(manifest_de_yaml)) "manifest_ready_awaiting_downloaded_export" else "awaiting_manifest_generation",
     note = paste(
-      "Panels D and E require the whole-subtree manifest download for the selected",
+      "Panels E and F require the whole-subtree manifest download for the selected",
       "eight GenomePerspective nodes (six late test lineages plus two controls),",
       "supplied as panelDE.zip."
     ),
@@ -172,6 +172,63 @@ resize_to_width <- function(img, width_px) {
   magick::image_resize(img, sprintf("%dx%d!", width_px, height_px))
 }
 
+add_panel_margin <- function(img, top = 140, right = 32, bottom = 32, left = 100, color = "white") {
+  info <- magick::image_info(img)
+  magick::image_extent(
+    img,
+    geometry = sprintf("%dx%d+%d+%d", info$width[[1]] + left + right, info$height[[1]] + top + bottom, left, top),
+    gravity = "northwest",
+    color = color
+  )
+}
+
+add_colored_outer_border <- function(img, border = 6, color = "#b2182b") {
+  magick::image_border(img, color = color, geometry = sprintf("%dx%d", border, border))
+}
+
+draw_image_box <- function(img, x_left, y_top, x_right, y_bottom, color = "#b2182b", lwd = 6) {
+  info <- magick::image_info(img)
+  overlay <- magick::image_graph(width = info$width[[1]], height = info$height[[1]], bg = "transparent")
+  op <- graphics::par(mar = c(0, 0, 0, 0), xaxs = "i", yaxs = "i")
+  graphics::plot.new()
+  graphics::plot.window(xlim = c(0, info$width[[1]]), ylim = c(info$height[[1]], 0))
+  graphics::rect(x_left, y_top, x_right, y_bottom, border = color, lwd = lwd)
+  graphics::par(op)
+  grDevices::dev.off()
+  magick::image_composite(img, overlay)
+}
+
+draw_image_line <- function(img, x0, y0, x1, y1, color = "#b2182b", lwd = 5) {
+  info <- magick::image_info(img)
+  overlay <- magick::image_graph(width = info$width[[1]], height = info$height[[1]], bg = "transparent")
+  op <- graphics::par(mar = c(0, 0, 0, 0), xaxs = "i", yaxs = "i")
+  graphics::plot.new()
+  graphics::plot.window(xlim = c(0, info$width[[1]]), ylim = c(info$height[[1]], 0))
+  graphics::segments(x0 = x0, y0 = y0, x1 = x1, y1 = y1, col = color, lwd = lwd)
+  graphics::par(op)
+  grDevices::dev.off()
+  magick::image_composite(img, overlay)
+}
+
+draw_centered_text <- function(img, label, x, y, pointsize = 66, color = "black", font = "") {
+  info <- magick::image_info(img)
+  overlay <- magick::image_graph(width = info$width[[1]], height = info$height[[1]], bg = "transparent")
+  op <- graphics::par(mar = c(0, 0, 0, 0), xaxs = "i", yaxs = "i")
+  graphics::plot.new()
+  graphics::plot.window(xlim = c(0, info$width[[1]]), ylim = c(info$height[[1]], 0))
+  graphics::text(x = x, y = y, labels = label, cex = pointsize / 12, font = 2, col = color)
+  graphics::par(op)
+  grDevices::dev.off()
+  magick::image_composite(img, overlay)
+}
+
+panel_a_reference_bbox <- c(
+  xmin = 0.33,
+  xmax = 0.54,
+  ymin = 0.73,
+  ymax = 0.82
+)
+
 label_panel_image <- function(img, label, pointsize = NULL, x_offset = NULL, y_offset = NULL) {
   info <- magick::image_info(img)
   if (is.null(pointsize)) {
@@ -202,9 +259,11 @@ label_panel_image <- function(img, label, pointsize = NULL, x_offset = NULL, y_o
   )
 }
 
-prepare_assembled_panel_image <- function(path, max_width = 1000) {
+prepare_assembled_panel_image <- function(path, max_width = 1000, do_trim = TRUE) {
   img <- read_panel_image(path)
-  img <- trim_panel_image(img)
+  if (isTRUE(do_trim)) {
+    img <- trim_panel_image(img)
+  }
   img <- magick::image_border(img, color = "white", geometry = "24x24")
   info <- magick::image_info(img)
   if (info$width[[1]] > max_width) {
@@ -232,36 +291,34 @@ build_primary_use_case_right_block <- function(output_panels_dir,
                                                panel_a_zip,
                                                cache_dir) {
   panel_paths <- list(
-    B = file.path(output_panels_dir, "panel_B_growth_curves.png"),
-    C = file.path(output_panels_dir, "panel_C_trends.png"),
-    D = file.path(output_panels_dir, "panel_D_ploidy_surrogate.png"),
-    E = file.path(output_panels_dir, "panel_E_genome_heatmap.png")
+    C = file.path(output_panels_dir, "panel_C_growth_curves.png"),
+    D = file.path(output_panels_dir, "panel_D_trends.png"),
+    E = file.path(output_panels_dir, "panel_E_ploidy_surrogate.png"),
+    F = file.path(output_panels_dir, "panel_F_genome_heatmap.png")
   )
   
   panel_images <- lapply(names(panel_paths), function(label) {
-    max_width <- if (identical(label, "B")) 1000 else 900
-    prepare_assembled_panel_image(panel_paths[[label]], max_width = max_width)
+    max_width <- if (identical(label, "C")) 1180 else 1080
+    img <- prepare_assembled_panel_image(panel_paths[[label]], max_width = max_width)
+    add_panel_margin(img, top = 32, right = 18, bottom = 12, left = 18)
   })
   names(panel_images) <- names(panel_paths)
-  c_block <- panel_images$C
-  bottom_row <- stack_images_vertical(list(panel_images$D, panel_images$E))
+  d_block <- panel_images$D
+  bottom_row <- stack_images_vertical(list(panel_images$E, panel_images$F))
   
   row_width <- max(
-    magick::image_info(panel_images$B)$width[[1]],
-    magick::image_info(c_block)$width[[1]],
+    magick::image_info(panel_images$C)$width[[1]],
+    magick::image_info(d_block)$width[[1]],
     magick::image_info(bottom_row)$width[[1]]
   )
   
-  top_row <- resize_to_width(panel_images$B, row_width)
-  # top_row <- label_panel_image(top_row, "C")
-  # c_block <- label_panel_image(resize_to_width(c_block, row_width), "D")
-  d_panel <- resize_to_width(panel_images$D, row_width)
-  d_info <- magick::image_info(d_panel)
-  # d_panel <- label_panel_image(d_panel, "E",y_offset = as.integer(round(d_info$height[[1]] * -0.15)))
-  e_panel <- label_panel_image(resize_to_width(panel_images$E, row_width), "F")
-  bottom_row <- stack_images_vertical(list(d_panel, e_panel))
+  top_row <- resize_to_width(panel_images$C, row_width)
+  d_block <- resize_to_width(d_block, row_width)
+  e_panel <- resize_to_width(panel_images$E, row_width)
+  f_panel <- resize_to_width(panel_images$F, row_width)
+  bottom_row <- stack_images_vertical(list(e_panel, f_panel))
   
-  stack_images_vertical(list(top_row, c_block, bottom_row))
+  stack_images_vertical(list(top_row, d_block, bottom_row))
 }
 
 assemble_primary_use_case_figure <- function(output_panels_dir,
@@ -278,39 +335,90 @@ assemble_primary_use_case_figure <- function(output_panels_dir,
   )
   right_info <- magick::image_info(right_block)
   
-  panel_a0_path <- tempfile(fileext = ".png")
-  render_panel_a0_png(subtree_rds = subtree_rds, output_path = panel_a0_path)
-  panel_a0 <- prepare_assembled_panel_image(panel_a0_path, max_width = 700)
+  panel_a_path <- tempfile(fileext = ".png")
+  render_panel_a_png(subtree_rds = subtree_rds, output_path = panel_a_path)
+  panel_a <- prepare_assembled_panel_image(panel_a_path, max_width = 700, do_trim = FALSE)
+  panel_a <- add_panel_margin(panel_a)
   
-  panel_a_tree_path <- tempfile(fileext = ".png")
-  render_panel_a_tree_only_png(
-    subtree_rds = subtree_rds,
-    panel_a_zip = panel_a_zip,
-    cache_dir = cache_dir,
-    output_path = panel_a_tree_path
-  )
-  panel_a_tree <- prepare_assembled_panel_image(panel_a_tree_path, max_width = 700)
-  panel_a_legend <- trim_panel_image(build_panel_a_legend_image(subtree_rds))
-  panel_a_legend <- magick::image_border(panel_a_legend, color = "white", geometry = "12x12")
-  panel_a <- stack_images_horizontal(list(panel_a_tree, panel_a_legend))
+  panel_b_path <- file.path(output_panels_dir, "panel_B_circular_phylogeny.png")
+  if (!file.exists(panel_b_path)) {
+    stop(sprintf("Expected panel image not found: %s", panel_b_path))
+  }
+  panel_b <- prepare_assembled_panel_image(panel_b_path, max_width = 700)
+  panel_b <- add_panel_margin(panel_b, top = 40, right = 20, bottom = 20, left = 20)
   
   target_left_width <- max(
-    magick::image_info(panel_a0)$width[[1]],
-    magick::image_info(panel_a)$width[[1]]
+    magick::image_info(panel_a)$width[[1]],
+    magick::image_info(panel_b)$width[[1]]
   )
-  panel_a0 <- resize_to_width(panel_a0, round(target_left_width*1.2))
-  panel_a <- resize_to_width(panel_a, target_left_width)
+  panel_a <- resize_to_width(panel_a, round(target_left_width * 1.2))
+  panel_b <- resize_to_width(panel_b, target_left_width)
   
-  target_a0_height <- max(1L, as.integer(round(right_info$height[[1]] * 0.9)))
-  target_a_height <- max(1L, right_info$height[[1]] - target_a0_height)
-  panel_a0 <- resize_to_height(panel_a0, target_a0_height)
+  target_a_height <- max(1L, as.integer(round(right_info$height[[1]] * 0.9)))
+  target_b_height <- max(1L, right_info$height[[1]] - target_a_height)
   panel_a <- resize_to_height(panel_a, target_a_height)
-  # panel_a0 <- label_panel_image(panel_a0, "A")
-  # panel_a <- label_panel_image(panel_a, "B")
-  left_block <- stack_images_vertical(list(panel_a0, panel_a))
+  panel_b <- resize_to_height(panel_b, target_b_height)
+  bbox <- panel_a_reference_bbox
+  panel_a_info <- magick::image_info(panel_a)
+  margin_left <- 90
+  margin_top <- 90
+  inner_width <- panel_a_info$width[[1]] - 118
+  inner_height <- panel_a_info$height[[1]] - 118
+  panel_a <- draw_image_box(
+    panel_a,
+    x_left = margin_left + bbox[["xmin"]] * inner_width,
+    y_top = margin_top + bbox[["ymin"]] * inner_height,
+    x_right = margin_left + bbox[["xmax"]] * inner_width,
+    y_bottom = margin_top + bbox[["ymax"]] * inner_height
+  )
+  panel_b <- add_colored_outer_border(panel_b, border = 6)
+  left_block <- stack_images_vertical(list(panel_a, panel_b))
   left_info <- magick::image_info(left_block)
+
+  left_width <- left_info$width[[1]]
+  panel_a_final_height <- as.integer(round(magick::image_info(panel_a)$height[[1]] * left_width / magick::image_info(panel_a)$width[[1]]))
+  panel_b_final_height <- as.integer(round(magick::image_info(panel_b)$height[[1]] * left_width / magick::image_info(panel_b)$width[[1]]))
+  anchor_a_left_x <- as.integer(round(margin_left + bbox[["xmin"]] * (left_width - 118)))
+  anchor_a_right_x <- as.integer(round(margin_left + bbox[["xmax"]] * (left_width - 118)))
+  anchor_a_y <- as.integer(round(margin_top + bbox[["ymax"]] * (panel_a_final_height - 118)))
+  anchor_b_left_x <- 3L
+  anchor_b_right_x <- left_width - 3L
+  anchor_b_y <- panel_a_final_height + 3L
+  left_block <- draw_image_line(
+    left_block,
+    x0 = anchor_a_left_x,
+    y0 = anchor_a_y,
+    x1 = anchor_b_left_x,
+    y1 = anchor_b_y
+  )
+  left_block <- draw_image_line(
+    left_block,
+    x0 = anchor_a_right_x,
+    y0 = anchor_a_y,
+    x1 = anchor_b_right_x,
+    y1 = anchor_b_y
+  )
+  left_block <- draw_image_line(
+    left_block,
+    x0 = anchor_b_left_x,
+    y0 = anchor_b_y,
+    x1 = anchor_b_right_x,
+    y1 = anchor_b_y
+  )
   
   assembled <- stack_images_horizontal(list(left_block, right_block))
+  assembled <- label_panel_image(assembled, "A", pointsize = 66, x_offset = 14, y_offset = 6)
+  assembled <- label_panel_image(assembled, "C", pointsize = 66, x_offset = left_width + 14, y_offset = 6)
+  assembled <- label_panel_image(assembled, "D", pointsize = 66, x_offset = left_width + 14, y_offset = as.integer(round(right_info$height[[1]] * 0.24)))
+  assembled <- label_panel_image(assembled, "E", pointsize = 66, x_offset = left_width + 14, y_offset = as.integer(round(right_info$height[[1]] * 0.60)))
+  assembled <- label_panel_image(assembled, "F", pointsize = 66, x_offset = left_width + 14, y_offset = as.integer(round(right_info$height[[1]] * 0.82)))
+  assembled <- draw_centered_text(
+    assembled,
+    "B",
+    x = as.integer(round(left_width * 0.08)),
+    y = as.integer(round(panel_a_final_height + panel_b_final_height * 0.06)),
+    pointsize = 66
+  )
   assembled_info <- magick::image_info(assembled)
   output_png <- file.path(output_final_dir, "figure_primary_use_case_panels.png")
   output_meta <- file.path(output_final_dir, "figure_primary_use_case_panels_meta.csv")
@@ -341,29 +449,29 @@ assemble_primary_use_case_figure <- function(output_panels_dir,
   )
 }
 
-verify_assembled_figure_contains_a0 <- function(output_meta,
-                                                min_extra_width_ratio = 0.2) {
+verify_assembled_figure_contains_panel_a <- function(output_meta,
+                                                     min_extra_width_ratio = 0.2) {
   meta <- utils::read.csv(output_meta, stringsAsFactors = FALSE)
-  meta$a0_present <- meta$extra_width_ratio >= min_extra_width_ratio
+  meta$panel_a_present <- meta$extra_width_ratio >= min_extra_width_ratio
   meta
 }
 
-find_panel_a_zip <- function(root_dir = ".", panel_a_zip = NULL) {
+find_panel_b_zip <- function(root_dir = ".", panel_a_zip = NULL) {
   zip_path <- if (is.null(panel_a_zip)) file.path(root_dir, "input", "subtree", "panelA.zip") else panel_a_zip
   if (!file.exists(zip_path)) {
-    stop(sprintf("Panel A zip not found at '%s'.", zip_path))
+    stop(sprintf("Panel B source zip not found at '%s'.", zip_path))
   }
   normalizePath(zip_path, winslash = "/", mustWork = TRUE)
 }
 
-list_panel_a_members <- function(panel_a_zip) {
+list_panel_b_members <- function(panel_a_zip) {
   listing <- utils::unzip(panel_a_zip, list = TRUE)
   members <- listing$Name
   members[grepl("^imaging/.+/images/.+_mask_overlay\\.tif$", members)]
 }
 
-first_panel_a_overlay_members <- function(panel_a_zip, node_ids) {
-  members <- sort(list_panel_a_members(panel_a_zip))
+first_panel_b_overlay_members <- function(panel_a_zip, node_ids) {
+  members <- sort(list_panel_b_members(panel_a_zip))
   chosen <- vapply(node_ids, function(node_id) {
     hits <- members[grepl(sprintf("^imaging/%s/images/", node_id), members)]
     if (length(hits) == 0) {
@@ -379,7 +487,7 @@ first_panel_a_overlay_members <- function(panel_a_zip, node_ids) {
   )
 }
 
-extract_panel_a_overlays <- function(panel_a_zip, overlay_map, cache_dir) {
+extract_panel_b_overlays <- function(panel_a_zip, overlay_map, cache_dir) {
   out_dir <- file.path(cache_dir, "panelA_overlays")
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
   
@@ -411,7 +519,7 @@ crop_overlay_to_png <- function(input_path, output_path, crop_width_frac = 0.2, 
   output_path
 }
 
-prepare_panel_a_rasters <- function(extracted_paths, cache_dir) {
+prepare_panel_b_rasters <- function(extracted_paths, cache_dir) {
   out_dir <- file.path(cache_dir, "panelA_png")
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
   rasters <- lapply(names(extracted_paths), function(node_id) {
@@ -423,7 +531,7 @@ prepare_panel_a_rasters <- function(extracted_paths, cache_dir) {
   rasters
 }
 
-panel_a_tree_layout <- function(passaging, root_id = panel_a_root_id) {
+panel_b_tree_layout <- function(passaging, root_id = panel_b_root_id) {
   sub_ids <- descendant_ids(passaging, root_id)
   p <- passaging[passaging$id %in% sub_ids, , drop = FALSE]
   p <- p[order(p$passage, p$id), , drop = FALSE]
@@ -488,7 +596,7 @@ panel_a_tree_layout <- function(passaging, root_id = panel_a_root_id) {
   list(nodes = nodes, edges = edges)
 }
 
-panel_a_subtree_to_phylo <- function(passaging, root_id = panel_a_root_id) {
+panel_b_subtree_to_phylo <- function(passaging, root_id = panel_b_root_id) {
   sub_ids <- descendant_ids(passaging, root_id)
   p <- passaging[passaging$id %in% sub_ids, , drop = FALSE]
   p <- p[order(p$passage, p$id), , drop = FALSE]
@@ -640,17 +748,17 @@ full_subtree_tree_layout <- function(passaging, root_id = "SNU-668_rK_A0_seed") 
   list(nodes = nodes, edges = edges)
 }
 
-plot_panel_a <- function(subtree_rds,
+plot_panel_b <- function(subtree_rds,
                          panel_a_zip,
                          cache_dir,
-                         root_id = panel_a_root_id,
+                         root_id = panel_b_root_id,
                          include_legend = TRUE) {
   x <- read_subtree_bundle(subtree_rds)
   passaging <- x[["tables"]][["Passaging"]]
-  phylo_data <- panel_a_subtree_to_phylo(passaging, root_id = root_id)
-  overlay_map <- first_panel_a_overlay_members(panel_a_zip, phylo_data$tip_labels)
-  extracted <- extract_panel_a_overlays(panel_a_zip, overlay_map, cache_dir)
-  rasters <- prepare_panel_a_rasters(extracted, cache_dir)
+  phylo_data <- panel_b_subtree_to_phylo(passaging, root_id = root_id)
+  overlay_map <- first_panel_b_overlay_members(panel_a_zip, phylo_data$tip_labels)
+  extracted <- extract_panel_b_overlays(panel_a_zip, overlay_map, cache_dir)
+  rasters <- prepare_panel_b_rasters(extracted, cache_dir)
   
   passage_levels <- sort(unique(phylo_data$edge_passages))
   passage_palette <- grDevices::colorRampPalette(
@@ -705,22 +813,22 @@ plot_panel_a <- function(subtree_rds,
   }
   if (isTRUE(include_legend)) {
     graphics::legend(
-      "bottomleft",
+      "bottomright",
       legend = sprintf("P%s", passage_levels),
       col = passage_palette,
       lwd = 3,
       bty = "n",
-      cex = cloneid_figure_text_sizes$panel_a_plot_legend_cex*0.5,
-      inset = 0.01,
+      cex = cloneid_figure_text_sizes$panel_a_plot_legend_cex * 0.32,
+      inset = 0.03,
       title = "Passage"
     )
   }
   invisible(list(phylo = phylo_data$phy, overlay_map = overlay_map, passage_palette = passage_palette))
 }
 
-render_panel_a_tree_only_png <- function(subtree_rds, panel_a_zip, cache_dir, output_path) {
+render_panel_b_tree_only_png <- function(subtree_rds, panel_a_zip, cache_dir, output_path) {
   grDevices::png(output_path, width = 3200, height = 2200, res = 220)
-  plot_panel_a(
+  plot_panel_b(
     subtree_rds = subtree_rds,
     panel_a_zip = panel_a_zip,
     cache_dir = cache_dir,
@@ -730,10 +838,10 @@ render_panel_a_tree_only_png <- function(subtree_rds, panel_a_zip, cache_dir, ou
   output_path
 }
 
-build_panel_a_legend_image <- function(subtree_rds, width = 520, height = 1200) {
+build_panel_b_legend_image <- function(subtree_rds, width = 520, height = 1200) {
   x <- read_subtree_bundle(subtree_rds)
   passaging <- x[["tables"]][["Passaging"]]
-  layout <- panel_a_tree_layout(passaging, root_id = panel_a_root_id)
+  layout <- panel_b_tree_layout(passaging, root_id = panel_b_root_id)
   passage_levels <- sort(unique(layout$edges$child_passage))
   passage_palette <- grDevices::colorRampPalette(
     c("#d8d2c4", "#c58f2f", "#6f8f3a", "#28536b")
@@ -758,25 +866,40 @@ build_panel_a_legend_image <- function(subtree_rds, width = 520, height = 1200) 
   magick::image_read(legend_path)
 }
 
-save_panel_a_outputs <- function(subtree_rds,
+save_panel_b_outputs <- function(subtree_rds,
                                  root_dir = ".",
                                  panel_a_zip = NULL,
                                  output_panels_dir,
                                  cache_dir) {
-  panel_a_zip <- find_panel_a_zip(root_dir = root_dir, panel_a_zip = panel_a_zip)
+  panel_a_zip <- find_panel_b_zip(root_dir = root_dir, panel_a_zip = panel_a_zip)
   dir.create(output_panels_dir, recursive = TRUE, showWarnings = FALSE)
   dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
   
-  panel_path <- file.path(output_panels_dir, "panel_A_circular_phylogeny.png")
-  overlay_csv <- file.path(cache_dir, "panel_a_selected_overlays.csv")
+  panel_path <- file.path(output_panels_dir, "panel_B_circular_phylogeny.png")
+  overlay_csv <- file.path(cache_dir, "panel_b_selected_overlays.csv")
   
   png(panel_path, width = 2200, height = 2200, res = 220)
-  plot_result <- plot_panel_a(
+  plot_result <- plot_panel_b(
     subtree_rds = subtree_rds,
     panel_a_zip = panel_a_zip,
-    cache_dir = cache_dir
+    cache_dir = cache_dir,
+    include_legend = FALSE
   )
   dev.off()
+
+  legend_img <- trim_panel_image(build_panel_b_legend_image(subtree_rds))
+  legend_img <- magick::image_border(legend_img, color = "white", geometry = "10x10")
+  panel_img <- magick::image_read(panel_path)
+  panel_info <- magick::image_info(panel_img)
+  target_legend_width <- as.integer(round(panel_info$width[[1]] * 0.08))
+  legend_img <- resize_to_width(legend_img, target_legend_width)
+  panel_img <- magick::image_composite(
+    panel_img,
+    legend_img,
+    gravity = "southeast",
+    offset = "+28+28"
+  )
+  magick::image_write(panel_img, path = panel_path, format = "png")
   
   utils::write.csv(plot_result$overlay_map, overlay_csv, row.names = FALSE)
   
@@ -784,16 +907,16 @@ save_panel_a_outputs <- function(subtree_rds,
     panel_path = panel_path,
     overlay_map = plot_result$overlay_map,
     files = data.frame(
-      artifact = c("panel_A", "panel_a_overlay_map"),
+      artifact = c("panel_B", "panel_b_overlay_map"),
       path = c(panel_path, overlay_csv),
       stringsAsFactors = FALSE
     )
   )
 }
 
-plot_panel_a0 <- function(subtree_rds,
-                          root_id = "SNU-668_rK_A0_seed",
-                          highlighted_root_id = panel_a_root_id) {
+plot_panel_a <- function(subtree_rds,
+                         root_id = "SNU-668_rK_A0_seed",
+                         highlighted_root_id = panel_b_root_id) {
   x <- read_subtree_bundle(subtree_rds)
   passaging <- x[["tables"]][["Passaging"]]
   layout <- full_subtree_tree_layout(passaging, root_id = root_id)
@@ -828,18 +951,36 @@ plot_panel_a0 <- function(subtree_rds,
   invisible(layout)
 }
 
-render_panel_a0_png <- function(subtree_rds,
-                                output_path,
-                                root_id = "SNU-668_rK_A0_seed",
-                                highlighted_root_id = panel_a_root_id) {
+render_panel_a_png <- function(subtree_rds,
+                               output_path,
+                               root_id = "SNU-668_rK_A0_seed",
+                               highlighted_root_id = panel_b_root_id) {
   grDevices::png(output_path, width = 1400, height = 4200, res = 220)
-  plot_panel_a0(
+  plot_panel_a(
     subtree_rds = subtree_rds,
     root_id = root_id,
     highlighted_root_id = highlighted_root_id
   )
   grDevices::dev.off()
   output_path
+}
+
+save_panel_a_outputs <- function(subtree_rds, output_panels_dir) {
+  dir.create(output_panels_dir, recursive = TRUE, showWarnings = FALSE)
+  panel_path <- file.path(output_panels_dir, "panel_A_Event_history.png")
+  render_panel_a_png(
+    subtree_rds = subtree_rds,
+    output_path = panel_path
+  )
+
+  list(
+    panel_path = panel_path,
+    files = data.frame(
+      artifact = "panel_A",
+      path = panel_path,
+      stringsAsFactors = FALSE
+    )
+  )
 }
 
 verify_panel_zip_contents <- function(zip_dir, panel_a_manifest, panel_de_manifest) {
@@ -877,12 +1018,12 @@ verify_panel_zip_contents <- function(zip_dir, panel_a_manifest, panel_de_manife
     count_de <- length(matched_de)
     
     if (count_a >= count_de) {
-      detected_panel <- "A"
+      detected_panel <- "B"
       expected_targets <- length(expected_a)
       matched_targets <- count_a
       missing_targets <- setdiff(expected_a, matched_a)
     } else {
-      detected_panel <- "D/E"
+      detected_panel <- "E/F"
       expected_targets <- length(expected_de)
       matched_targets <- count_de
       missing_targets <- setdiff(expected_de, matched_de)
@@ -909,7 +1050,7 @@ verify_panel_zip_contents <- function(zip_dir, panel_a_manifest, panel_de_manife
       details = list(
         zip_file = zip_path,
         detected_panel = detected_panel,
-        matched_targets = if (detected_panel == "A") matched_a else matched_de,
+        matched_targets = if (detected_panel == "B") matched_a else matched_de,
         missing_targets = missing_targets,
         members = members
       )
@@ -927,7 +1068,7 @@ verify_panel_zip_contents <- function(zip_dir, panel_a_manifest, panel_de_manife
 find_panel_de_zip <- function(root_dir = ".", panel_de_zip = NULL) {
   zip_path <- if (is.null(panel_de_zip)) file.path(root_dir, "input", "subtree", "panelDE.zip") else panel_de_zip
   if (!file.exists(zip_path)) {
-    stop(sprintf("Panel D/E zip not found at '%s'.", zip_path))
+    stop(sprintf("Panel E/F zip not found at '%s'.", zip_path))
   }
   normalizePath(zip_path, winslash = "/", mustWork = TRUE)
 }
@@ -988,7 +1129,7 @@ panel_de_cell_metrics <- function(profile_list) {
   do.call(rbind, rows)
 }
 
-plot_panel_d <- function(cell_metrics) {
+plot_panel_e <- function(cell_metrics) {
   cell_metrics$passaging_id <- factor(
     cell_metrics$passaging_id,
     levels = panel_de_selected_nodes
@@ -1005,7 +1146,11 @@ plot_panel_d <- function(cell_metrics) {
     )
   ) +
     ggplot2::geom_violin(alpha = 0.25, width = 0.9, trim = FALSE) +
-    ggplot2::geom_jitter(width = 0.15, height = 0, size = 1.3, alpha = 0.8) +
+    ggplot2::geom_point(
+      position = ggplot2::position_jitter(width = 0.15, height = 0, seed = 1),
+      size = 1.3,
+      alpha = 0.8
+    ) +
     ggplot2::scale_fill_manual(values = lineage_colors, drop = FALSE) +
     ggplot2::scale_color_manual(values = lineage_colors, drop = FALSE) +
     ggplot2::labs(
@@ -1021,7 +1166,7 @@ plot_panel_d <- function(cell_metrics) {
     )
 }
 
-parse_panel_e_intervals <- function(interval_ids) {
+parse_panel_f_intervals <- function(interval_ids) {
   chrom <- sub(":.*$", "", interval_ids)
   coords <- sub("^[0-9]+:", "", interval_ids)
   start <- suppressWarnings(as.numeric(sub("-.*$", "", coords)))
@@ -1037,9 +1182,9 @@ parse_panel_e_intervals <- function(interval_ids) {
   )
 }
 
-build_panel_e_matrix <- function(profile_list) {
+build_panel_f_matrix <- function(profile_list) {
   common_rows <- Reduce(intersect, lapply(profile_list, function(x) rownames(x$profile)))
-  interval_meta <- parse_panel_e_intervals(common_rows)
+  interval_meta <- parse_panel_f_intervals(common_rows)
   interval_meta <- interval_meta[order(interval_meta$chromosome_num, interval_meta$start, interval_meta$end), , drop = FALSE]
   common_rows <- interval_meta$interval_id
   ordered_ids <- panel_de_selected_nodes[panel_de_selected_nodes %in% names(profile_list)]
@@ -1052,14 +1197,14 @@ build_panel_e_matrix <- function(profile_list) {
   list(matrix = combined, interval_meta = interval_meta, lineage_ids = ordered_ids)
 }
 
-panel_e_annotation_colors <- function(lineage_ids) {
+panel_f_annotation_colors <- function(lineage_ids) {
   cols <- unname(cloneid_lineage_palette[lineage_ids])
   names(cols) <- lineage_ids
   cols
 }
 
-plot_panel_e <- function(profile_list, silent = TRUE) {
-  built <- build_panel_e_matrix(profile_list)
+plot_panel_f <- function(profile_list, silent = TRUE) {
+  built <- build_panel_f_matrix(profile_list)
   mat <- built$matrix
   interval_meta <- built$interval_meta
   
@@ -1083,7 +1228,7 @@ plot_panel_e <- function(profile_list, silent = TRUE) {
     "C5" = "#C2C2C2"  # Light Gray
   )
   annotation_colors <- list(
-    lineage = panel_e_annotation_colors(lineage_ids),
+    lineage = panel_f_annotation_colors(lineage_ids),
     cluster = cluster_colors
   )
   
@@ -1113,35 +1258,35 @@ plot_panel_e <- function(profile_list, silent = TRUE) {
   )
 }
 
-save_de_outputs <- function(root_dir = ".", panel_de_zip = NULL, output_panels_dir, cache_dir) {
+save_ef_outputs <- function(root_dir = ".", panel_de_zip = NULL, output_panels_dir, cache_dir) {
   panel_de_zip <- find_panel_de_zip(root_dir = root_dir, panel_de_zip = panel_de_zip)
   profile_list <- read_panel_de_genome_profiles(panel_de_zip, cache_dir = cache_dir)
   cell_metrics <- panel_de_cell_metrics(profile_list)
-  panel_d_plot <- plot_panel_d(cell_metrics)
-  panel_e_plot <- plot_panel_e(profile_list, silent = TRUE)
+  panel_e_plot <- plot_panel_e(cell_metrics)
+  panel_f_plot <- plot_panel_f(profile_list, silent = TRUE)
   
   dir.create(output_panels_dir, recursive = TRUE, showWarnings = FALSE)
   dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
   
-  panel_d_file <- file.path(output_panels_dir, "panel_D_ploidy_surrogate.png")
-  panel_e_file <- file.path(output_panels_dir, "panel_E_genome_heatmap.png")
+  panel_e_file <- file.path(output_panels_dir, "panel_E_ploidy_surrogate.png")
+  panel_f_file <- file.path(output_panels_dir, "panel_F_genome_heatmap.png")
   metrics_csv <- file.path(cache_dir, "panel_de_cell_metrics.csv")
   
-  ggplot2::ggsave(panel_d_file, plot = panel_d_plot, width = 8, height = 3, dpi = 300)
-  grDevices::png(panel_e_file, width = 8, height = 7.5, units = "in", res = 300)
+  ggplot2::ggsave(panel_e_file, plot = panel_e_plot, width = 8, height = 3, dpi = 300)
+  grDevices::png(panel_f_file, width = 8, height = 7.5, units = "in", res = 300)
   grid::grid.newpage()
-  grid::grid.draw(panel_e_plot$gtable)
+  grid::grid.draw(panel_f_plot$gtable)
   grDevices::dev.off()
   utils::write.csv(cell_metrics, metrics_csv, row.names = FALSE)
   
   list(
     profile_list = profile_list,
     cell_metrics = cell_metrics,
-    panel_d_plot = panel_d_plot,
     panel_e_plot = panel_e_plot,
+    panel_f_plot = panel_f_plot,
     files = data.frame(
-      artifact = c("panel_D_png", "panel_E_png", "panel_DE_metrics_csv"),
-      path = c(panel_d_file, panel_e_file, metrics_csv),
+      artifact = c("panel_E_png", "panel_F_png", "panel_EF_metrics_csv"),
+      path = c(panel_e_file, panel_f_file, metrics_csv),
       stringsAsFactors = FALSE
     )
   )
