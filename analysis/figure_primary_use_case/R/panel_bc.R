@@ -162,7 +162,7 @@ derive_growthfit_like_dataset <- function(subtree_rds) {
   df
 }
 
-choose_panel_b_passages <- function(growth_df, per_regime = 6L) {
+choose_panel_c_passages <- function(growth_df, per_regime = 6L) {
   passages <- unique(growth_df[, c("regime", "parsed_passage"), drop = FALSE])
   split_passages <- split(passages$parsed_passage, passages$regime)
   common_vals <- Reduce(
@@ -188,9 +188,9 @@ choose_panel_b_passages <- function(growth_df, per_regime = 6L) {
   }))
 }
 
-build_panel_b_data <- function(subtree_rds, passages_per_regime = 6L) {
+build_panel_c_data <- function(subtree_rds, passages_per_regime = 6L) {
   growth_df <- derive_growthfit_like_dataset(subtree_rds)
-  selected <- choose_panel_b_passages(growth_df, per_regime = passages_per_regime)
+  selected <- choose_panel_c_passages(growth_df, per_regime = passages_per_regime)
   passage_rows <- unique(growth_df[, c("regime", "replicate", "parsed_passage", "passage_id"), drop = FALSE])
   keep_ids <- merge(passage_rows, selected, by = c("regime", "parsed_passage"))
 
@@ -206,7 +206,7 @@ build_panel_b_data <- function(subtree_rds, passages_per_regime = 6L) {
   )
 }
 
-summarize_c_metrics <- function(growth_df) {
+summarize_d_metrics <- function(growth_df) {
   split(growth_df, growth_df$passage_id) |>
     lapply(function(df) {
       harvest_rows <- df[df$event == "harvest", , drop = FALSE]
@@ -232,9 +232,9 @@ summarize_c_metrics <- function(growth_df) {
     do.call(what = rbind)
 }
 
-write_growthfit_like_json <- function(subtree_rds, output_json, panel_b_data = NULL) {
-  if (is.null(panel_b_data)) {
-    panel_b_data <- build_panel_b_data(subtree_rds = subtree_rds)
+write_growthfit_like_json <- function(subtree_rds, output_json, panel_c_data = NULL) {
+  if (is.null(panel_c_data)) {
+    panel_c_data <- build_panel_c_data(subtree_rds = subtree_rds)
   }
 
   passaging <- prepare_bc_passaging(subtree_rds)
@@ -258,9 +258,9 @@ write_growthfit_like_json <- function(subtree_rds, output_json, panel_b_data = N
         })
       )
     ),
-    panel_b_selected_passages = split(
-      panel_b_data$selected_passages$parsed_passage,
-      panel_b_data$selected_passages$regime
+    panel_c_selected_passages = split(
+      panel_c_data$selected_passages$parsed_passage,
+      panel_c_data$selected_passages$regime
     )
   )
 
@@ -269,8 +269,8 @@ write_growthfit_like_json <- function(subtree_rds, output_json, panel_b_data = N
   invisible(output_json)
 }
 
-plot_panel_b <- function(panel_b_data) {
-  df <- panel_b_data$panel_df
+plot_panel_c <- function(panel_c_data) {
+  df <- panel_c_data$panel_df
   replicate_colors <- cloneid_lineage_palette[c("K1", "K2", "K3", "r1", "r2", "r3")]
   ggplot2::ggplot(df, ggplot2::aes(
     x = days_after_seeding,
@@ -298,7 +298,7 @@ plot_panel_b <- function(panel_b_data) {
     )
 }
 
-panel_c_trend_stats <- function(df, value_col) {
+panel_d_trend_stats <- function(df, value_col) {
   keep <- df[, c("parsed_passage", value_col), drop = FALSE]
   keep <- keep[stats::complete.cases(keep), , drop = FALSE]
   if (nrow(keep) < 3 || length(unique(keep$parsed_passage)) < 2) {
@@ -329,7 +329,7 @@ panel_c_trend_stats <- function(df, value_col) {
   )
 }
 
-panel_c_x_breaks <- function(parsed_passages, n = 5L) {
+panel_d_x_breaks <- function(parsed_passages, n = 5L) {
   vals <- sort(unique(stats::na.omit(parsed_passages)))
   if (length(vals) <= n) {
     return(vals)
@@ -344,7 +344,7 @@ plot_single_c_metric <- function(metrics, regime, value_col, y_lab,
                                  x_limits = NULL, y_limits = NULL,
                                  show_x = TRUE, show_y = TRUE) {
   df <- metrics[metrics$regime == regime, , drop = FALSE]
-  stats_label <- panel_c_trend_stats(df, value_col)
+  stats_label <- panel_d_trend_stats(df, value_col)
   replicate_levels <- if (identical(regime, "K")) c("K1", "K2", "K3") else c("r1", "r2", "r3")
   replicate_colors <- cloneid_lineage_palette[replicate_levels]
   p <- ggplot2::ggplot(df, ggplot2::aes(
@@ -400,7 +400,7 @@ plot_single_c_metric <- function(metrics, regime, value_col, y_lab,
   p
 }
 
-plot_panel_c <- function(metrics) {
+plot_panel_d <- function(metrics) {
   c1 <- plot_single_c_metric(
     metrics = metrics,
     regime = "r",
@@ -452,8 +452,8 @@ plot_panel_c <- function(metrics) {
       if (nrow(df) == 0) {
         return(NULL)
       }
-      value_col <- if (identical(unique(df$panel_row), "Growth rate (day^-1)")) "growth_rate" else "max_population_size"
-      stats_label <- panel_c_trend_stats(df, value_col)
+      value_col <- if (identical(as.character(unique(df$panel_row)), "Growth rate (day^-1)")) "growth_rate" else "max_population_size"
+      stats_label <- panel_d_trend_stats(df, value_col)
       data.frame(
         panel_row = unique(df$panel_row),
         regime = unique(df$regime),
@@ -480,7 +480,7 @@ plot_panel_c <- function(metrics) {
     ggplot2::facet_grid(panel_row ~ regime, scales = "free") +
     ggplot2::scale_color_manual(values = cloneid_lineage_palette[c("K1", "K2", "K3", "r1", "r2", "r3")], drop = FALSE) +
     ggplot2::scale_x_continuous(
-      breaks = panel_c_x_breaks(combined_metrics$parsed_passage)
+      breaks = panel_d_x_breaks(combined_metrics$parsed_passage)
     ) +
     ggplot2::scale_y_continuous(labels = scales::label_number(big.mark = ",")) +
     ggplot2::labs(
@@ -501,38 +501,38 @@ plot_panel_c <- function(metrics) {
   list(c1 = c1, c2 = c2, c3 = c3, c4 = c4, combined = combined)
 }
 
-draw_panel_c_combined <- function(panel_c_plots) {
-  print(panel_c_plots$combined)
-  invisible(panel_c_plots$combined)
+draw_panel_d_combined <- function(panel_d_plots) {
+  print(panel_d_plots$combined)
+  invisible(panel_d_plots$combined)
 }
 
-save_panel_c_plots <- function(panel_c_plots, output_panels_dir) {
+save_panel_d_plots <- function(panel_d_plots, output_panels_dir) {
   panel_files <- c(
-    c1 = file.path(output_panels_dir, "panel_C1_growth_rate_r.png"),
-    c2 = file.path(output_panels_dir, "panel_C2_growth_rate_K.png"),
-    c3 = file.path(output_panels_dir, "panel_C3_max_population_r.png"),
-    c4 = file.path(output_panels_dir, "panel_C4_max_population_K.png"),
-    combined = file.path(output_panels_dir, "panel_C_trends.png")
+    c1 = file.path(output_panels_dir, "panel_D1_growth_rate_r.png"),
+    c2 = file.path(output_panels_dir, "panel_D2_growth_rate_K.png"),
+    c3 = file.path(output_panels_dir, "panel_D3_max_population_r.png"),
+    c4 = file.path(output_panels_dir, "panel_D4_max_population_K.png"),
+    combined = file.path(output_panels_dir, "panel_D_trends.png")
   )
 
   for (nm in c("c1", "c2", "c3", "c4")) {
-    ggplot2::ggsave(panel_files[[nm]], plot = panel_c_plots[[nm]], width = 6, height = 5, dpi = 300)
+    ggplot2::ggsave(panel_files[[nm]], plot = panel_d_plots[[nm]], width = 6, height = 5, dpi = 300)
   }
   grDevices::png(panel_files[["combined"]], width = 3600, height = 3000, res = 300)
-  draw_panel_c_combined(panel_c_plots)
+  draw_panel_d_combined(panel_d_plots)
   grDevices::dev.off()
 
   panel_files
 }
 
-save_bc_outputs <- function(subtree_rds, output_panels_dir, cache_dir, passages_per_regime = 6L) {
-  panel_b_data <- build_panel_b_data(
+save_cd_outputs <- function(subtree_rds, output_panels_dir, cache_dir, passages_per_regime = 6L) {
+  panel_c_data <- build_panel_c_data(
     subtree_rds = subtree_rds,
     passages_per_regime = passages_per_regime
   )
-  metrics <- summarize_c_metrics(panel_b_data$growth_df)
+  metrics <- summarize_d_metrics(panel_c_data$growth_df)
   used_harvest_rows <- unique(
-    panel_b_data$growth_df[, c("passage_id", "id", "date", "correctedCount"), drop = FALSE]
+    panel_c_data$growth_df[, c("passage_id", "id", "date", "correctedCount"), drop = FALSE]
   )
   used_harvest_rows <- used_harvest_rows[order(
     used_harvest_rows$passage_id,
@@ -547,45 +547,45 @@ save_bc_outputs <- function(subtree_rds, output_panels_dir, cache_dir, passages_
   dir.create(output_panels_dir, recursive = TRUE, showWarnings = FALSE)
   dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
 
-  panel_b_plot <- plot_panel_b(panel_b_data)
-  panel_c_plots <- plot_panel_c(metrics)
-  panel_b_file <- file.path(output_panels_dir, "panel_B_growth_curves.png")
-  metrics_csv <- file.path(cache_dir, "panel_c_metrics.csv")
+  panel_c_plot <- plot_panel_c(panel_c_data)
+  panel_d_plots <- plot_panel_d(metrics)
+  panel_c_file <- file.path(output_panels_dir, "panel_C_growth_curves.png")
+  metrics_csv <- file.path(cache_dir, "panel_d_metrics.csv")
   used_harvest_rows_csv <- file.path(cache_dir, "panel_bc_used_harvest_rows.csv")
   used_harvest_ids_txt <- file.path(cache_dir, "panel_bc_used_harvest_ids.txt")
-  growth_json <- file.path(cache_dir, "panel_b_growthfit_like_config.json")
+  growth_json <- file.path(cache_dir, "panel_c_growthfit_like_config.json")
 
-  ggplot2::ggsave(panel_b_file, plot = panel_b_plot, width = 14, height = 6.5, dpi = 300)
-  panel_c_files <- save_panel_c_plots(panel_c_plots, output_panels_dir)
+  ggplot2::ggsave(panel_c_file, plot = panel_c_plot, width = 14, height = 6.5, dpi = 300)
+  panel_d_files <- save_panel_d_plots(panel_d_plots, output_panels_dir)
   utils::write.csv(metrics, metrics_csv, row.names = FALSE)
   utils::write.csv(used_harvest_rows, used_harvest_rows_csv, row.names = FALSE)
   writeLines(used_harvest_ids$id, used_harvest_ids_txt, useBytes = TRUE)
-  write_growthfit_like_json(subtree_rds, growth_json, panel_b_data = panel_b_data)
+  write_growthfit_like_json(subtree_rds, growth_json, panel_c_data = panel_c_data)
 
   list(
-    panel_b_data = panel_b_data,
+    panel_c_data = panel_c_data,
     metrics = metrics,
-    panel_c_plots = panel_c_plots,
+    panel_d_plots = panel_d_plots,
     files = data.frame(
       artifact = c(
-        "panel_B_png",
-        "panel_C1_png",
-        "panel_C2_png",
-        "panel_C3_png",
-        "panel_C4_png",
         "panel_C_png",
-        "panel_C_metrics_csv",
+        "panel_D1_png",
+        "panel_D2_png",
+        "panel_D3_png",
+        "panel_D4_png",
+        "panel_D_png",
+        "panel_D_metrics_csv",
         "panel_BC_used_harvest_rows_csv",
         "panel_BC_used_harvest_ids_txt",
-        "panel_B_growthfit_like_json"
+        "panel_C_growthfit_like_json"
       ),
       path = c(
-        panel_b_file,
-        unname(panel_c_files[["c1"]]),
-        unname(panel_c_files[["c2"]]),
-        unname(panel_c_files[["c3"]]),
-        unname(panel_c_files[["c4"]]),
-        unname(panel_c_files[["combined"]]),
+        panel_c_file,
+        unname(panel_d_files[["c1"]]),
+        unname(panel_d_files[["c2"]]),
+        unname(panel_d_files[["c3"]]),
+        unname(panel_d_files[["c4"]]),
+        unname(panel_d_files[["combined"]]),
         metrics_csv,
         used_harvest_rows_csv,
         used_harvest_ids_txt,
@@ -622,20 +622,20 @@ inspect_bc_inputs <- function(subtree_rds) {
   list(parsed = parsed, summary = summary)
 }
 
-panel_b_status <- function() {
+panel_c_status <- function() {
   data.frame(
-    panel = "B",
+    panel = "C",
     status = "rendered",
-    note = "Saved panel B plot and growthfit-like JSON from the subtree bundle.",
+    note = "Saved panel C plot and growthfit-like JSON from the subtree bundle.",
     stringsAsFactors = FALSE
   )
 }
 
-panel_c_status <- function() {
+panel_d_status <- function() {
   data.frame(
-    panel = "C1-C4",
+    panel = "D1-D4",
     status = "rendered",
-    note = "Saved the four panel C trend subplots and per-passage metrics.",
+    note = "Saved the four panel D trend subplots and per-passage metrics.",
     stringsAsFactors = FALSE
   )
 }
