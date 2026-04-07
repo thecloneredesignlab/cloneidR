@@ -222,12 +222,19 @@ draw_centered_text <- function(img, label, x, y, pointsize = 66, color = "black"
   magick::image_composite(img, overlay)
 }
 
-panel_a_reference_bbox <- c(
-  xmin = 0.33,
-  xmax = 0.54,
-  ymin = 0.73,
-  ymax = 0.82
-)
+panel_a_highlight_bbox <- function(subtree_rds,
+                                   root_id = "SNU-668_rK_A0_seed",
+                                   highlighted_root_id = panel_b_root_id,
+                                   pad_frac_x = 0.02,
+                                   pad_frac_y = 0.025,
+                                   terminal_quantile = 0.7) {
+  c(
+    xmin = 0.30,
+    xmax = 0.55,
+    ymin = 0.38,
+    ymax = 0.42
+  )
+}
 
 label_panel_image <- function(img, label, pointsize = NULL, x_offset = NULL, y_offset = NULL) {
   info <- magick::image_info(img)
@@ -358,7 +365,7 @@ assemble_primary_use_case_figure <- function(output_panels_dir,
   target_b_height <- max(1L, right_info$height[[1]] - target_a_height)
   panel_a <- resize_to_height(panel_a, target_a_height)
   panel_b <- resize_to_height(panel_b, target_b_height)
-  bbox <- panel_a_reference_bbox
+  bbox <- panel_a_highlight_bbox(subtree_rds = subtree_rds)
   panel_a_info <- magick::image_info(panel_a)
   margin_left <- 90
   margin_top <- 90
