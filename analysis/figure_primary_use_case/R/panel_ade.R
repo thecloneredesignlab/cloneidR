@@ -1076,11 +1076,11 @@ plot_panel_e <- function(profile_list, silent = TRUE) {
     levels = sprintf("C%s", sort(unique(cluster_ids)))
   )
   cluster_colors <- c(
-    "C1" = "#6a3d9a",
-    "C2" = "#1b9e77",
-    "C3" = "#e7298a",
-    "C4" = "#66a61e",
-    "C5" = "#7570b3"
+    "C1" = "#000000", # Pure Black
+    "C2" = "#333333", # Dark Gray
+    "C3" = "#666666", # Medium Gray
+    "C4" = "#999999", # Medium-Light Gray
+    "C5" = "#C2C2C2"  # Light Gray
   )
   annotation_colors <- list(
     lineage = panel_e_annotation_colors(lineage_ids),
