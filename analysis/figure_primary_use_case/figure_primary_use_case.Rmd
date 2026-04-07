@@ -136,7 +136,12 @@ knitr::kable(manual_portal_steps(paths), align = "ll")
 
 The intended manual sequence is:
 
-1.  Ensure `input/subtree/subtree_SNU-668_dp_A9_seedT2.rds` is present.
+1.  Ensure `input/subtree/subtree_SNU-668_dp_A9_seedT2.rds` is present. 
+    Here is a brief steps to obtain this subtree file: 
+      1) open https://dev.cloneid.org/cloneid, then find module "View content of CLONEID DB" and click the `open` bottom;
+      2) paste `SNU-668_dp_A9_seedT2` into the search box;
+      3) Then, on the page that opens, click the root node `SNU-668_dp_A9_seedT2`, and in the pop-up submenu, click `Download subtree (RDS)`;
+      4) copy `subtree_SNU-668_dp_A9_seedT2.rds` into `input/subtree/`.
 2.  Render this `.Rmd` to regenerate:
     -   `input/manifest_A/manifest_panel_A.yaml`
     -   `input/manifest_DE/manifest_panel_DE.yaml`
