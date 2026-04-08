@@ -1,6 +1,6 @@
 # Primary Use Case Figure Workflow
 
-This directory contains the reproducible workflow scaffold for the manuscript figure:
+This workflow does not require installation of the R package `cloneidR`. This directory contains the reproducible workflow scaffold for the [CLONEID manuscript](https://www.biorxiv.org/content/10.1101/2025.05.07.652202v2) figure:
 
 `CLONEID links event history, growth dynamics and karyotypic state in a longitudinal adaptation experiment.`
 
