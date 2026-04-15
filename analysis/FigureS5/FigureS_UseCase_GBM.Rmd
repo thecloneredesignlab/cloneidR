@@ -1,0 +1,1226 @@
+---
+title: "Figure S Use Case GBM Reanalysis"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+params:
+  focus_pid: "P2"
+  minobs: 10
+  minobs_values: [5, 10, 20]
+  n_cores: 9
+  pm_values: [5e-05]
+  nboot: 45
+  n0: 100000
+  nb: 10000000
+  correct_efflux: true
+  force_refit: false
+  force_recompute_panels: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = TRUE,
+  warning = TRUE,
+  fig.width = 8,
+  fig.height = 6
+)
+```
+
+## Overview
+
+This notebook rebuilds Figure S5 GBM use-case panels B-G from the data stored under
+`cloneidR/analysis/FigureS5/data`, while using the current ALFA-K package and the
+updated analysis logic used in PANcanKFLs.
+
+Key rules implemented here:
+
+- Patients are discovered from the actual subdirectories currently present under `data/`.
+- Metadata come from `meta_data.xlsx`.
+- If `ID_alt` is non-missing, it is used in preference to `ID`.
+- Sample profiles are read from `data/<pid>/perspectives/<effective_id>/TranscriptomePerspective.rds`.
+- The primary-to-recurrent interval follows the PANcanKFLs metadata convention:
+  `Primary = 1`, `Recurrent = abs(Age_recurrent - Age_primary) * 360` days.
+- ALFA-K fitting is re-run from these inputs across `minobs = 5, 10, 20`,
+  with task-level parallelization over `patient x minobs`, and the best
+  cross-validated fit is selected separately for each patient.
+
+```{r paths-and-libraries}
+suppressPackageStartupMessages({
+  library(alfakR)
+  library(circlize)
+  library(ComplexHeatmap)
+  library(cowplot)
+  library(dplyr)
+  library(doParallel)
+  library(foreach)
+  library(ggplot2)
+  library(ggpubr)
+  library(grid)
+  library(readxl)
+  library(RColorBrewer)
+  library(scales)
+  library(stringr)
+  library(tibble)
+  library(tidyr)
+  library(uwot)
+})
+
+analysis_dir <- "/Users/4482173/Documents/GitHub/cloneidR/analysis/FigureS5"
+data_dir <- file.path(analysis_dir, "data")
+meta_path <- file.path(data_dir, "meta_data.xlsx")
+
+pancan_repo <- "/Users/4482173/Documents/GitHub/PANcanKFLs"
+usecase_repo <- "/Users/4482173/Documents/GitHub/CLONEID_usecases/usecase3"
+
+generated_dir <- file.path(analysis_dir, "generated")
+result_dir <- file.path(generated_dir, "results")
+figure_dir <- file.path(generated_dir, "figures")
+input_dir <- file.path(result_dir, "ALFA-K_inputs")
+fit_dir <- file.path(result_dir, "ALFAK_fitnessLandscape")
+cache_dir <- file.path(generated_dir, "cache")
+
+dir.create(generated_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(input_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(fit_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
+
+focus_pid <- params$focus_pid
+minobs_values_use <- params$minobs_values
+if (is.null(minobs_values_use) || !length(unlist(minobs_values_use))) {
+  minobs_values_use <- params$minobs
+}
+minobs_values_use <- sort(unique(as.integer(unlist(minobs_values_use))))
+minobs_values_use <- minobs_values_use[is.finite(minobs_values_use) & minobs_values_use > 0]
+if (!length(minobs_values_use)) {
+  stop("No valid minobs values supplied.")
+}
+pm_values <- as.numeric(unlist(params$pm_values))
+n_cores_use <- suppressWarnings(as.integer(params$n_cores))
+if (!is.finite(n_cores_use) || n_cores_use < 1L) {
+  detected_cores <- suppressWarnings(parallel::detectCores(logical = FALSE))
+  if (!is.finite(detected_cores) || detected_cores < 1L) {
+    detected_cores <- 1L
+  }
+  n_cores_use <- max(1L, detected_cores - 1L)
+}
+nboot_use <- as.integer(params$nboot)
+n0_use <- as.numeric(params$n0)
+nb_use <- as.numeric(params$nb)
+correct_efflux_use <- isTRUE(params$correct_efflux)
+force_refit <- isTRUE(params$force_refit)
+force_recompute_panels <- isTRUE(params$force_recompute_panels)
+
+stage_levels <- c("Primary", "Recurrent")
+diploid_state <- paste(rep(2, 22), collapse = ".")
+set.seed(3.1415926)
+```
+
+## Helper Functions
+
+```{r helpers}
+sort_pid_levels <- function(x) {
+  x <- unique(as.character(x))
+  ord_num <- suppressWarnings(as.integer(sub("^P", "", x)))
+  x[order(ifelse(is.na(ord_num), Inf, ord_num), x)]
+}
+
+normalize_01 <- function(x) {
+  rng <- range(x, na.rm = TRUE)
+  if (!all(is.finite(rng)) || diff(rng) == 0) {
+    return(rep(0, length(x)))
+  }
+  (x - rng[1]) / diff(rng)
+}
+
+normalize_mean <- function(x) {
+  rng <- range(x, na.rm = TRUE)
+  if (!all(is.finite(rng)) || diff(rng) == 0) {
+    return(rep(0, length(x)))
+  }
+  (x - mean(x, na.rm = TRUE)) / diff(rng)
+}
+
+normalize_median <- function(x) {
+  rng <- range(x, na.rm = TRUE)
+  if (!all(is.finite(rng)) || diff(rng) == 0) {
+    return(rep(0, length(x)))
+  }
+  (x - stats::median(x, na.rm = TRUE)) / diff(rng)
+}
+
+gen_all_neighbours <- function(ids, as.strings = TRUE) {
+  if (as.strings) {
+    ids <- lapply(ids, function(xx) as.numeric(unlist(strsplit(xx, split = "[.]"))))
+  }
+  nkern <- do.call(rbind, lapply(seq_len(length(ids[[1]])), function(i) {
+    x0 <- rep(0, length(ids[[1]]))
+    x1 <- x0
+    x0[i] <- -1
+    x1[i] <- 1
+    rbind(x0, x1)
+  }))
+  n <- do.call(rbind, lapply(ids, function(xx) {
+    t(apply(nkern, 1, function(kk) kk + xx))
+  }))
+  n <- unique(n)
+  nids <- length(ids)
+  n <- rbind(do.call(rbind, ids), n)
+  n <- unique(n)
+  n[-seq_len(nids), , drop = FALSE]
+}
+
+ensure_center_in_limits <- function(limits, center = 1) {
+  c(min(limits[1], center), max(limits[2], center))
+}
+
+placeholder_plot <- function(label) {
+  ggplot() +
+    annotate("text", x = 0, y = 0, label = label, size = 5) +
+    theme_void()
+}
+
+save_plot_pdf <- function(plot_obj, file, width = 5.5, height = 5) {
+  grDevices::pdf(file, width = width, height = height, useDingbats = FALSE)
+  on.exit(grDevices::dev.off(), add = TRUE)
+  print(plot_obj)
+}
+
+read_transcriptome_perspective <- function(rds_path) {
+  obj <- readRDS(rds_path)
+  stopifnot(is.list(obj), "profile" %in% names(obj))
+  profile <- as.matrix(obj$profile)
+  storage.mode(profile) <- "numeric"
+  list(
+    passaging_id = obj$passaging_id,
+    perspective_type = obj$perspective_type,
+    profile = round(profile)
+  )
+}
+
+compute_delta_time_days <- function(df_pid) {
+  df_pid <- df_pid %>%
+    mutate(Stage = factor(Stage, levels = stage_levels)) %>%
+    arrange(Stage, effective_id)
+
+  age_primary <- suppressWarnings(as.numeric(df_pid$Age[df_pid$Stage == "Primary"][1]))
+  age_recurrent <- suppressWarnings(as.numeric(df_pid$Age[df_pid$Stage == "Recurrent"][1]))
+
+  recurrent_days <- if (is.finite(age_primary) && is.finite(age_recurrent)) {
+    as.integer(round(abs(age_recurrent - age_primary) * 360))
+  } else {
+    NA_integer_
+  }
+  if (!is.finite(recurrent_days) || recurrent_days <= 1L) {
+    recurrent_days <- 180L
+  }
+
+  df_pid %>%
+    mutate(
+      Delta_Time = ifelse(as.character(Stage) == "Primary", 1L, recurrent_days)
+    )
+}
+
+available_pid_dirs <- function(base_dir) {
+  dd <- list.dirs(base_dir, recursive = FALSE, full.names = TRUE)
+  dd <- dd[file.info(dd)$isdir %in% TRUE]
+  sort_pid_levels(basename(dd))
+}
+
+build_patient_manifest <- function(meta_tbl, base_dir) {
+  pid_dirs <- available_pid_dirs(base_dir)
+  meta_tbl %>%
+    mutate(
+      effective_id = ifelse(!is.na(ID_alt) & nzchar(ID_alt), ID_alt, ID),
+      pid = as.character(pid),
+      Stage = as.character(Stage),
+      Age = suppressWarnings(as.numeric(Age))
+    ) %>%
+    filter(pid %in% pid_dirs) %>%
+    group_by(pid) %>%
+    group_modify(function(.x, .y) compute_delta_time_days(.x)) %>%
+    ungroup() %>%
+    mutate(
+      rds_path = file.path(base_dir, pid, "perspectives", effective_id, "TranscriptomePerspective.rds"),
+      exists = file.exists(rds_path)
+    ) %>%
+    arrange(factor(pid, levels = sort_pid_levels(pid)), factor(Stage, levels = stage_levels))
+}
+
+profile_to_karyotype_strings <- function(profile_mat) {
+  if (nrow(profile_mat) != 22) {
+    warning("Expected 22 chromosome rows; got ", nrow(profile_mat))
+  }
+  x <- t(round(as.matrix(profile_mat)))
+  apply(x, 1, paste, collapse = ".")
+}
+
+build_count_matrix_from_profiles <- function(patient_manifest) {
+  stopifnot(length(unique(patient_manifest$pid)) == 1L)
+  rows_ok <- patient_manifest[patient_manifest$exists, , drop = FALSE]
+  rows_ok <- rows_ok[order(match(rows_ok$Stage, stage_levels)), , drop = FALSE]
+  if (nrow(rows_ok) < 2) {
+    stop("Need at least two available samples for patient ", unique(patient_manifest$pid))
+  }
+
+  long_df <- do.call(rbind, lapply(seq_len(nrow(rows_ok)), function(i) {
+    rr <- rows_ok[i, , drop = FALSE]
+    obj <- read_transcriptome_perspective(rr$rds_path)
+    if (!is.null(obj$passaging_id) && !identical(as.character(obj$passaging_id), as.character(rr$effective_id))) {
+      warning("passaging_id mismatch for ", rr$pid, " / ", rr$effective_id)
+    }
+    tibble(
+      karyotype = profile_to_karyotype_strings(obj$profile),
+      Delta_Time = rr$Delta_Time,
+      Stage = rr$Stage,
+      effective_id = rr$effective_id
+    )
+  }))
+
+  delta_levels <- sort(unique(rows_ok$Delta_Time))
+  count_mat <- as.data.frame.matrix(table(
+    long_df$karyotype,
+    factor(long_df$Delta_Time, levels = delta_levels)
+  ))
+  colnames(count_mat) <- as.character(delta_levels)
+  count_mat <- count_mat[order(rowSums(count_mat), decreasing = TRUE), , drop = FALSE]
+
+  list(
+    count_matrix = count_mat,
+    long_df = long_df
+  )
+}
+
+save_alfak_input <- function(count_matrix, out_path) {
+  yi <- list(
+    x = count_matrix,
+    pop.fitness = NULL,
+    dt = 1
+  )
+  saveRDS(yi, out_path)
+  invisible(out_path)
+}
+
+extract_xval_metrics <- function(xv) {
+  metrics <- list(
+    xval_r2 = if (!is.null(xv$R2R)) as.numeric(xv$R2R) else NA_real_,
+    xval_cor = NA_real_,
+    xval_rmse = NA_real_,
+    xval_mae = NA_real_,
+    n_xval = NA_integer_
+  )
+
+  if (is.null(xv$tmp)) {
+    return(metrics)
+  }
+
+  tmp_df <- as.data.frame(xv$tmp)
+  if (ncol(tmp_df) < 2) {
+    return(metrics)
+  }
+
+  colnames(tmp_df)[1:2] <- c("f_est", "f_xv")
+  tmp_df <- tmp_df[, c("f_est", "f_xv"), drop = FALSE]
+  tmp_df$f_est <- suppressWarnings(as.numeric(tmp_df$f_est))
+  tmp_df$f_xv <- suppressWarnings(as.numeric(tmp_df$f_xv))
+  tmp_df <- tmp_df[is.finite(tmp_df$f_est) & is.finite(tmp_df$f_xv), , drop = FALSE]
+
+  metrics$n_xval <- nrow(tmp_df)
+  if (!nrow(tmp_df)) {
+    return(metrics)
+  }
+
+  diff_vec <- tmp_df$f_est - tmp_df$f_xv
+  metrics$xval_rmse <- sqrt(mean(diff_vec^2))
+  metrics$xval_mae <- mean(abs(diff_vec))
+  if (nrow(tmp_df) >= 2) {
+    metrics$xval_cor <- suppressWarnings(stats::cor(tmp_df$f_est, tmp_df$f_xv, use = "complete.obs"))
+  }
+  metrics
+}
+
+run_alfak_fit <- function(input_rds,
+                          outdir,
+                          minobs,
+                          pm,
+                          nboot,
+                          n0,
+                          nb,
+                          correct_efflux = TRUE,
+                          force_refit = FALSE) {
+  landscape_path <- file.path(outdir, "landscape.Rds")
+  xval_path <- file.path(outdir, "xval.Rds")
+  pm_label <- format(pm, scientific = FALSE, trim = TRUE)
+
+  if (!force_refit && file.exists(landscape_path) && file.exists(xval_path)) {
+    cached_fit <- tryCatch({
+      xv <- readRDS(xval_path)
+      c(
+        list(
+          outdir = outdir,
+          pm = pm,
+          pm_label = pm_label,
+          minobs = minobs,
+          status = "ok",
+          error_message = NA_character_
+        ),
+        extract_xval_metrics(xv),
+        list(
+          landscape_path = landscape_path,
+          xval_path = xval_path
+        )
+      )
+    }, error = function(e) NULL)
+    if (!is.null(cached_fit)) {
+      return(cached_fit)
+    }
+  }
+
+  dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
+  yi <- readRDS(input_rds)
+  yi$x <- as.data.frame(yi$x)
+  if (diploid_state %in% rownames(yi$x)) {
+    yi$x <- yi$x[rownames(yi$x) != diploid_state, , drop = FALSE]
+  }
+  if (!nrow(yi$x)) {
+    stop("All rows were filtered out for input: ", input_rds)
+  }
+  if (max(rowSums(yi$x), na.rm = TRUE) < minobs) {
+    stop("No frequent karyotypes reach minobs=", minobs, " for input: ", input_rds)
+  }
+
+  tryCatch({
+    alfakR::alfak(
+      yi = yi,
+      outdir = outdir,
+      passage_times = NULL,
+      minobs = minobs,
+      nboot = nboot,
+      n0 = n0,
+      nb = nb,
+      pm = pm,
+      correct_efflux = correct_efflux
+    )
+
+    xv <- readRDS(xval_path)
+    c(
+      list(
+        outdir = outdir,
+        pm = pm,
+        pm_label = pm_label,
+        minobs = minobs,
+        status = "ok",
+        error_message = NA_character_
+      ),
+      extract_xval_metrics(xv),
+      list(
+        landscape_path = landscape_path,
+        xval_path = xval_path
+      )
+    )
+  }, error = function(e) {
+    list(
+      outdir = outdir,
+      pm = pm,
+      pm_label = pm_label,
+      minobs = minobs,
+      status = "error",
+      error_message = conditionMessage(e),
+      xval_r2 = NA_real_,
+      xval_cor = NA_real_,
+      xval_rmse = NA_real_,
+      xval_mae = NA_real_,
+      n_xval = NA_integer_,
+      landscape_path = if (file.exists(landscape_path)) landscape_path else NA_character_,
+      xval_path = if (file.exists(xval_path)) xval_path else NA_character_
+    )
+  })
+}
+
+fit_patient_minobs_task <- function(patient_id,
+                                    input_rds,
+                                    fit_root,
+                                    pm_values,
+                                    minobs,
+                                    nboot,
+                                    n0,
+                                    nb,
+                                    correct_efflux,
+                                    force_refit = FALSE) {
+  fit_rows <- lapply(pm_values, function(pm_val) {
+    pm_label <- format(pm_val, scientific = FALSE, trim = TRUE)
+    outdir <- file.path(fit_root, paste0("pm_", pm_label), paste0("MINOBS_", minobs), patient_id)
+    run_alfak_fit(
+      input_rds = input_rds,
+      outdir = outdir,
+      minobs = minobs,
+      pm = pm_val,
+      nboot = nboot,
+      n0 = n0,
+      nb = nb,
+      correct_efflux = correct_efflux,
+      force_refit = force_refit
+    )
+  })
+
+  fit_tbl <- dplyr::bind_rows(lapply(fit_rows, as.data.frame))
+  fit_tbl$patient_id <- patient_id
+  fit_tbl
+}
+
+rank_fit_summary_tbl <- function(fit_tbl) {
+  fit_tbl %>%
+    dplyr::mutate(
+      status = as.character(status),
+      rank_xval_r2 = dplyr::coalesce(xval_r2, -Inf),
+      rank_xval_cor = dplyr::coalesce(xval_cor, -Inf),
+      rank_xval_rmse = dplyr::coalesce(xval_rmse, Inf),
+      rank_xval_mae = dplyr::coalesce(xval_mae, Inf)
+    ) %>%
+    dplyr::arrange(
+      factor(patient_id, levels = sort_pid_levels(patient_id)),
+      dplyr::desc(status == "ok"),
+      dplyr::desc(rank_xval_r2),
+      rank_xval_rmse,
+      rank_xval_mae,
+      dplyr::desc(rank_xval_cor),
+      minobs,
+      pm
+    )
+}
+
+select_best_fit_tbl <- function(fit_tbl) {
+  ranked_tbl <- rank_fit_summary_tbl(fit_tbl)
+
+  best_tbl <- ranked_tbl %>%
+    dplyr::filter(status == "ok") %>%
+    dplyr::group_by(patient_id) %>%
+    dplyr::slice_head(n = 1) %>%
+    dplyr::ungroup() %>%
+    dplyr::select(-rank_xval_r2, -rank_xval_cor, -rank_xval_rmse, -rank_xval_mae)
+
+  missing_patients <- setdiff(unique(as.character(ranked_tbl$patient_id)), unique(as.character(best_tbl$patient_id)))
+  if (length(missing_patients)) {
+    stop("No successful ALFA-K fit found for patient(s): ", paste(missing_patients, collapse = ", "))
+  }
+
+  ranked_tbl <- ranked_tbl %>%
+    dplyr::select(-rank_xval_r2, -rank_xval_cor, -rank_xval_rmse, -rank_xval_mae)
+
+  list(
+    all = ranked_tbl,
+    best = best_tbl
+  )
+}
+
+landscape_to_patient_df <- function(landscape_df, patient_id) {
+  k_mat <- do.call(rbind, lapply(landscape_df$k, function(xx) {
+    as.numeric(unlist(strsplit(xx, split = "\\.")))
+  }))
+  colnames(k_mat) <- as.character(seq_len(ncol(k_mat)))
+  out <- as.data.frame(k_mat)
+  out$karyotypes <- landscape_df$k
+  out$fitness <- landscape_df$mean
+  out$Nf_01 <- normalize_01(out$fitness)
+  out$Nf_mean <- normalize_mean(out$fitness)
+  out$Nf_median <- normalize_median(out$fitness)
+  out$Patient <- patient_id
+  out
+}
+
+pairwise_corr <- function(df, value_col) {
+  pats <- sort_pid_levels(unique(df$Patient))
+  res <- data.frame(
+    Patient1 = character(),
+    Patient2 = character(),
+    Correlation = numeric(),
+    Pvalue = numeric(),
+    OverlapCount = integer(),
+    stringsAsFactors = FALSE
+  )
+  if (length(pats) < 2) {
+    return(res)
+  }
+
+  for (i in seq_len(length(pats) - 1L)) {
+    for (j in seq.int(i + 1L, length(pats))) {
+      p1 <- pats[i]
+      p2 <- pats[j]
+      d1 <- df[df$Patient == p1, c("karyotypes", value_col), drop = FALSE]
+      d2 <- df[df$Patient == p2, c("karyotypes", value_col), drop = FALSE]
+      common <- intersect(d1$karyotypes, d2$karyotypes)
+      n_overlap <- length(common)
+      if (n_overlap > 1) {
+        v1 <- d1[[value_col]][match(common, d1$karyotypes)]
+        v2 <- d2[[value_col]][match(common, d2$karyotypes)]
+        ct <- tryCatch(stats::cor.test(v1, v2, use = "complete.obs"), error = function(e) NULL)
+        corr <- if (!is.null(ct)) unname(ct$estimate) else NA_real_
+        pval <- if (!is.null(ct)) ct$p.value else NA_real_
+      } else {
+        corr <- NA_real_
+        pval <- NA_real_
+      }
+      res <- rbind(
+        res,
+        data.frame(
+          Patient1 = p1,
+          Patient2 = p2,
+          Correlation = corr,
+          Pvalue = pval,
+          OverlapCount = n_overlap,
+          stringsAsFactors = FALSE
+        )
+      )
+    }
+  }
+  res
+}
+
+compute_combined_landscape_metrics <- function(landscape_tables) {
+  patient_ids <- sort_pid_levels(names(landscape_tables))
+  Data <- bind_rows(lapply(patient_ids, function(pid) landscape_to_patient_df(landscape_tables[[pid]], pid)))
+
+  karyotype_patient <- distinct(Data, Patient, karyotypes)
+  nop_tbl <- count(karyotype_patient, karyotypes, name = "Nop")
+  Data <- left_join(Data, nop_tbl, by = "karyotypes")
+
+  n_patients <- length(patient_ids)
+  near_ubiq_nop <- ceiling(0.8 * n_patients)
+
+  karyotypes_no_dup <- count(nop_tbl, Nop, name = "No. of karyotypes") %>%
+    complete(Nop = seq_len(n_patients), fill = list(`No. of karyotypes` = 0L)) %>%
+    arrange(Nop)
+
+  Data$NF_diploid <- NA_real_
+  for (pid in patient_ids) {
+    idx_pid <- which(Data$Patient == pid)
+    dip_idx <- idx_pid[Data$karyotypes[idx_pid] == diploid_state]
+    if (!length(dip_idx)) {
+      next
+    }
+    mean_dip <- mean(Data$fitness[dip_idx], na.rm = TRUE)
+    if (is.finite(mean_dip) && mean_dip != 0) {
+      Data$NF_diploid[idx_pid] <- Data$fitness[idx_pid] / mean_dip
+    }
+  }
+
+  ubiq_karyos <- nop_tbl$karyotypes[nop_tbl$Nop == n_patients]
+  Data$NF_ubiquitous_karyotypes <- NA_real_
+  corr_mat <- NULL
+  if (length(ubiq_karyos) > 0) {
+    for (pid in patient_ids) {
+      dp <- Data[Data$Patient == pid & Data$karyotypes %in% ubiq_karyos, , drop = FALSE]
+      if (!nrow(dp)) {
+        next
+      }
+      mean_pu <- mean(dp$fitness, na.rm = TRUE)
+      if (is.finite(mean_pu) && mean_pu != 0) {
+        Data$NF_ubiquitous_karyotypes[Data$Patient == pid] <- Data$fitness[Data$Patient == pid] / mean_pu
+      }
+    }
+
+    corr_input <- matrix(NA_real_, nrow = length(ubiq_karyos), ncol = length(patient_ids))
+    rownames(corr_input) <- ubiq_karyos
+    colnames(corr_input) <- patient_ids
+    for (pid in patient_ids) {
+      dp <- Data[Data$Patient == pid & Data$karyotypes %in% ubiq_karyos, c("karyotypes", "NF_ubiquitous_karyotypes"), drop = FALSE]
+      dp <- dp[!duplicated(dp$karyotypes), , drop = FALSE]
+      corr_input[match(dp$karyotypes, ubiq_karyos), pid] <- dp$NF_ubiquitous_karyotypes
+    }
+    corr_mat <- suppressWarnings(stats::cor(corr_input, use = "pairwise.complete.obs"))
+  }
+
+  results_corr_all <- pairwise_corr(Data, "fitness")
+  results_corr_ubiq <- pairwise_corr(Data[!is.na(Data$Nop) & Data$Nop == n_patients, , drop = FALSE], "NF_ubiquitous_karyotypes")
+  results_corr_near <- pairwise_corr(Data[!is.na(Data$Nop) & Data$Nop >= near_ubiq_nop, , drop = FALSE], "NF_ubiquitous_karyotypes")
+
+  list(
+    Data = Data,
+    patient_ids = patient_ids,
+    n_patients = n_patients,
+    karyotypes_no_dup = karyotypes_no_dup,
+    results_corr_all = results_corr_all,
+    results_corr_ubiq = results_corr_ubiq,
+    results_corr_near = results_corr_near,
+    corr_mat = corr_mat
+  )
+}
+
+beneficial_cnv_profile <- function(landscape_df) {
+  fq_flag <- landscape_df$fq
+  fq_keep <- if (is.logical(fq_flag)) {
+    fq_flag
+  } else {
+    as.character(fq_flag) %in% c("TRUE", "T", "true", "1")
+  }
+  fq_df <- landscape_df[fq_keep, , drop = FALSE]
+  if (!nrow(fq_df)) {
+    fq_df <- landscape_df
+  }
+
+  fitness_map <- setNames(landscape_df$mean, landscape_df$k)
+  cnv_colnames <- as.vector(rbind(paste0(seq_len(22), "-"), paste0(seq_len(22), "+")))
+  delta_mat <- matrix(NA_real_, nrow = nrow(fq_df), ncol = 44, dimnames = list(fq_df$k, cnv_colnames))
+
+  for (i in seq_len(nrow(fq_df))) {
+    k0 <- fq_df$k[i]
+    f0 <- fq_df$mean[i]
+    nb_mat <- gen_all_neighbours(k0)
+    nb_strings <- apply(nb_mat, 1, paste, collapse = ".")
+    delta_mat[i, ] <- unname(fitness_map[nb_strings] - f0)
+  }
+
+  prop <- colSums(delta_mat > 0, na.rm = TRUE) / nrow(delta_mat)
+  prop[is.na(prop)] <- 0
+  list(delta_mat = delta_mat, proportion = prop)
+}
+
+parse_segment_table <- function(segment_names) {
+  tibble(
+    segment = segment_names,
+    chromosome = sub(":.*$", "", segment_names),
+    start = suppressWarnings(as.numeric(sub("^[^:]+:(\\d+)-.*$", "\\1", segment_names))),
+    end = suppressWarnings(as.numeric(sub("^.*-(\\d+)$", "\\1", segment_names)))
+  ) %>%
+    mutate(
+      chromosome = suppressWarnings(as.integer(chromosome)),
+      seg_length = ifelse(is.finite(start) & is.finite(end), end - start + 1, NA_real_)
+    )
+}
+
+build_chromosome_cn_from_profiles <- function(profile_objects) {
+  mat_list <- lapply(names(profile_objects), function(sample_id) {
+    obj <- profile_objects[[sample_id]]
+    x <- as.matrix(obj$profile)
+    storage.mode(x) <- "numeric"
+    colnames(x) <- paste0(sample_id, "__", colnames(x))
+    x
+  })
+  names(mat_list) <- names(profile_objects)
+  seg_mat <- do.call(cbind, mat_list)
+  seg_tbl <- parse_segment_table(rownames(seg_mat))
+  keep_idx <- which(seg_tbl$chromosome %in% seq_len(22))
+  seg_mat <- seg_mat[keep_idx, , drop = FALSE]
+  seg_tbl <- seg_tbl[keep_idx, , drop = FALSE]
+
+  selected_idx <- integer(0)
+  for (chr in seq_len(22)) {
+    idx_chr <- which(seg_tbl$chromosome == chr)
+    if (!length(idx_chr)) {
+      next
+    }
+    if (length(idx_chr) == 1L) {
+      selected_idx <- c(selected_idx, idx_chr)
+    } else {
+      lengths_chr <- seg_tbl$seg_length[idx_chr]
+      lengths_chr[!is.finite(lengths_chr)] <- -Inf
+      selected_idx <- c(selected_idx, idx_chr[which.max(lengths_chr)])
+    }
+  }
+
+  out <- matrix(
+    2,
+    nrow = ncol(seg_mat),
+    ncol = 22,
+    dimnames = list(colnames(seg_mat), as.character(seq_len(22)))
+  )
+  if (length(selected_idx)) {
+    sel_chr <- as.character(seg_tbl$chromosome[selected_idx])
+    out[, sel_chr] <- t(seg_mat[selected_idx, , drop = FALSE])
+  }
+  out
+}
+
+build_timepoint_by_cell <- function(patient_manifest, profile_objects) {
+  vec_list <- lapply(seq_len(nrow(patient_manifest)), function(i) {
+    rr <- patient_manifest[i, , drop = FALSE]
+    obj <- profile_objects[[rr$effective_id]]
+    setNames(
+      rep(as.character(rr$Stage), ncol(obj$profile)),
+      paste0(rr$effective_id, "__", colnames(obj$profile))
+    )
+  })
+  unlist(vec_list)
+}
+
+save_ploidy_center_heatmap <- function(chromosome_cn,
+                                       timepoint_by_cell,
+                                       output_pdf,
+                                       timepoint_levels = stage_levels,
+                                       clustering_method = "ward.D",
+                                       pdf_size = 8) {
+  heatmap_mat <- as.matrix(chromosome_cn)
+  storage.mode(heatmap_mat) <- "numeric"
+
+  timepoint_by_cell <- timepoint_by_cell[rownames(heatmap_mat)]
+  timepoint_factor <- factor(as.character(timepoint_by_cell), levels = timepoint_levels)
+  timepoint_factor <- droplevels(timepoint_factor)
+  timepoint_display <- factor(
+    dplyr::recode(as.character(timepoint_factor), Primary = "t9192", Recurrent = "t9907"),
+    levels = c("t9192", "t9907")
+  )
+  timepoint_palette <- c(t9192 = "#33A02C", t9907 = "#FB9A99")
+
+  left_ha <- ComplexHeatmap::rowAnnotation(
+    TimePoint = timepoint_display,
+    col = list(TimePoint = timepoint_palette),
+    simple_anno_size = grid::unit(3.5, "mm"),
+    annotation_name_side = "top",
+    annotation_name_gp = grid::gpar(fontsize = 9)
+  )
+
+  row_clust <- if (nrow(heatmap_mat) > 1) {
+    stats::as.dendrogram(stats::hclust(stats::dist(heatmap_mat), method = clustering_method))
+  } else {
+    FALSE
+  }
+  col_clust <- if (ncol(heatmap_mat) > 1) {
+    cd <- stats::as.dendrogram(stats::hclust(stats::dist(t(heatmap_mat)), method = clustering_method))
+    burden <- colSums(heatmap_mat != 2, na.rm = TRUE)
+    cd <- stats::reorder(cd, wts = burden, agglo.FUN = mean)
+    rev(cd)
+  } else {
+    FALSE
+  }
+
+  cnv_colors <- circlize::colorRamp2(c(0, 2, 4), c("#2166AC", "#E6E6E6", "#B2182B"))
+  ht <- ComplexHeatmap::Heatmap(
+    heatmap_mat,
+    name = "Copy number",
+    col = cnv_colors,
+    cluster_rows = row_clust,
+    cluster_columns = col_clust,
+    row_dend_reorder = FALSE,
+    column_dend_reorder = FALSE,
+    show_column_names = TRUE,
+    show_row_names = FALSE,
+    left_annotation = left_ha,
+    use_raster = TRUE,
+    raster_quality = 2,
+    row_title = "Cells",
+    column_title = NULL,
+    heatmap_legend_param = list(at = c(0, 2, 4), labels = c("0", "2", "4"))
+  )
+
+  grDevices::pdf(output_pdf, width = pdf_size, height = pdf_size, useDingbats = FALSE)
+  on.exit(grDevices::dev.off(), add = TRUE)
+  ComplexHeatmap::draw(
+    ht,
+    merge_legends = TRUE,
+    heatmap_legend_side = "right",
+    annotation_legend_side = "right"
+  )
+}
+
+make_focus_umap_plot <- function(landscape_df, patient_id) {
+  k_df <- landscape_to_patient_df(landscape_df, patient_id)
+  dip_idx <- which(k_df$karyotypes == diploid_state)
+  if (!length(dip_idx)) {
+    stop("No diploid karyotype found for patient ", patient_id)
+  }
+  dip_mean <- mean(k_df$fitness[dip_idx], na.rm = TRUE)
+  if (!is.finite(dip_mean) || dip_mean == 0) {
+    stop("Diploid mean fitness is invalid for patient ", patient_id)
+  }
+
+  set.seed(3.1415926)
+  umap_mat <- uwot::umap2(as.matrix(k_df[, as.character(seq_len(22))]), n_components = 2, min_dist = 0.9)
+  umap_df <- as.data.frame(umap_mat)
+  colnames(umap_df) <- c("UMAP1", "UMAP2")
+  umap_df$relative_fitness <- k_df$fitness / dip_mean
+  umap_df <- umap_df[order(umap_df$relative_fitness, decreasing = FALSE, na.last = TRUE), , drop = FALSE]
+
+  min_rf <- min(umap_df$relative_fitness, na.rm = TRUE)
+  color_limits <- c(min(min_rf, 1), 1.5)
+  color_limits <- ensure_center_in_limits(color_limits, center = 1)
+  if (diff(color_limits) == 0) {
+    color_limits[2] <- color_limits[2] + 1e-06
+  }
+  color_knots <- c(
+    seq(color_limits[1], 1, length.out = 6),
+    seq(1, color_limits[2], length.out = 6)[-1]
+  )
+  color_values <- scales::rescale(color_knots, from = color_limits)
+
+  ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = relative_fitness)) +
+    geom_jitter(width = 0.1, height = 0.1, alpha = 1, size = 1, shape = 16) +
+    scale_color_gradientn(
+      colours = rev(RColorBrewer::brewer.pal(11, "RdYlBu")),
+      values = color_values,
+      limits = color_limits,
+      breaks = c(color_limits[1], 1, color_limits[2]),
+      labels = signif(c(color_limits[1], 1, color_limits[2]), 3),
+      oob = squish,
+      name = "Relative fitness\n(vs diploid)"
+    ) +
+    theme_minimal()
+}
+```
+
+## Metadata and Available Patients
+
+```{r metadata}
+meta_tbl <- readxl::read_excel(meta_path)
+patient_manifest <- build_patient_manifest(meta_tbl, data_dir)
+
+patient_summary <- patient_manifest %>%
+  group_by(pid) %>%
+  summarise(
+    n_samples_in_meta = n(),
+    n_available = sum(exists),
+    stages_available = paste(sort(unique(Stage[exists])), collapse = ", "),
+    effective_ids = paste(effective_id[exists], collapse = ", "),
+    recurrent_delta_days = unique(Delta_Time[Stage == "Recurrent"])[1],
+    .groups = "drop"
+  ) %>%
+  arrange(factor(pid, levels = sort_pid_levels(pid)))
+
+readr::write_tsv(patient_manifest, file.path(result_dir, "patient_manifest.tsv"))
+readr::write_tsv(patient_summary, file.path(result_dir, "patient_summary.tsv"))
+
+patient_summary
+```
+
+```{r fitting-patients}
+fit_manifest <- patient_manifest %>%
+  filter(exists) %>%
+  group_by(pid) %>%
+  filter(all(stage_levels %in% Stage)) %>%
+  ungroup()
+
+fit_patient_ids <- sort_pid_levels(unique(fit_manifest$pid))
+fit_patient_ids
+```
+
+## Build ALFA-K Inputs
+
+```{r build-inputs}
+input_index <- lapply(fit_patient_ids, function(pid) {
+  df_pid <- fit_manifest %>% filter(pid == !!pid)
+  obj <- build_count_matrix_from_profiles(df_pid)
+  out_path <- file.path(input_dir, paste0(pid, ".Rds"))
+  save_alfak_input(obj$count_matrix, out_path)
+  readr::write_tsv(
+    tibble(karyotype = rownames(obj$count_matrix)) %>%
+      bind_cols(as.data.frame(obj$count_matrix)),
+    file.path(result_dir, paste0(pid, "_ALFAK_input_counts.tsv"))
+  )
+  tibble(
+    pid = pid,
+    input_rds = out_path,
+    n_karyotypes = nrow(obj$count_matrix),
+    timepoints = paste(colnames(obj$count_matrix), collapse = ", ")
+  )
+})
+input_index_tbl <- bind_rows(input_index)
+readr::write_tsv(input_index_tbl, file.path(result_dir, "alfak_input_index.tsv"))
+input_index_tbl
+```
+
+## Refit Landscapes with Current ALFA-K
+
+```{r refit-landscapes}
+if (!requireNamespace("foreach", quietly = TRUE) || !requireNamespace("doParallel", quietly = TRUE)) {
+  stop("Packages 'foreach' and 'doParallel' are required for parallel ALFA-K fitting.")
+}
+
+fit_tasks_tbl <- expand.grid(
+  patient_id = fit_patient_ids,
+  minobs = minobs_values_use,
+  stringsAsFactors = FALSE
+)
+fit_tasks_tbl$input_rds <- file.path(input_dir, paste0(fit_tasks_tbl$patient_id, ".Rds"))
+fit_tasks_tbl <- fit_tasks_tbl[file.exists(fit_tasks_tbl$input_rds), , drop = FALSE]
+fit_tasks_tbl <- fit_tasks_tbl %>%
+  dplyr::arrange(factor(patient_id, levels = fit_patient_ids), minobs)
+
+if (!nrow(fit_tasks_tbl)) {
+  stop("No ALFA-K fitting tasks were constructed.")
+}
+
+n_cores_fit <- max(1L, min(n_cores_use, nrow(fit_tasks_tbl)))
+message("Dispatching ", nrow(fit_tasks_tbl), " ALFA-K tasks across ", n_cores_fit, " core(s).")
+
+readr::write_tsv(fit_tasks_tbl, file.path(result_dir, "alfak_task_index.tsv"))
+
+if (n_cores_fit == 1L) {
+  fit_task_results <- lapply(seq_len(nrow(fit_tasks_tbl)), function(i) {
+    rr <- fit_tasks_tbl[i, , drop = FALSE]
+    fit_patient_minobs_task(
+      patient_id = rr$patient_id,
+      input_rds = rr$input_rds,
+      fit_root = fit_dir,
+      pm_values = pm_values,
+      minobs = rr$minobs,
+      nboot = nboot_use,
+      n0 = n0_use,
+      nb = nb_use,
+      correct_efflux = correct_efflux_use,
+      force_refit = force_refit
+    )
+  })
+} else {
+  cl <- parallel::makeCluster(n_cores_fit)
+  parallel::clusterSetRNGStream(cl, iseed = 31415926)
+  doParallel::registerDoParallel(cl)
+  fit_task_results <- tryCatch({
+    foreach::foreach(
+      i = seq_len(nrow(fit_tasks_tbl)),
+      .packages = c("alfakR", "dplyr")
+    ) %dopar% {
+      rr <- fit_tasks_tbl[i, , drop = FALSE]
+      fit_patient_minobs_task(
+        patient_id = rr$patient_id,
+        input_rds = rr$input_rds,
+        fit_root = fit_dir,
+        pm_values = pm_values,
+        minobs = rr$minobs,
+        nboot = nboot_use,
+        n0 = n0_use,
+        nb = nb_use,
+        correct_efflux = correct_efflux_use,
+        force_refit = force_refit
+      )
+    }
+  }, finally = {
+    try(parallel::stopCluster(cl), silent = TRUE)
+    foreach::registerDoSEQ()
+  })
+}
+
+fit_summary_tbl <- dplyr::bind_rows(fit_task_results)
+fit_selection <- select_best_fit_tbl(fit_summary_tbl)
+fit_summary_tbl <- fit_selection$all
+selected_fit_tbl <- fit_selection$best
+
+if (nrow(selected_fit_tbl) != length(fit_patient_ids)) {
+  stop("Expected one selected fit per patient; got ", nrow(selected_fit_tbl), " rows for ", length(fit_patient_ids), " patients.")
+}
+
+readr::write_tsv(fit_summary_tbl, file.path(result_dir, "fit_summary.tsv"))
+readr::write_tsv(selected_fit_tbl, file.path(result_dir, "selected_fit.tsv"))
+
+selected_fit_tbl %>%
+  arrange(factor(patient_id, levels = sort_pid_levels(patient_id)))
+```
+
+## Load Selected Landscapes
+
+```{r load-landscapes}
+selected_landscapes <- lapply(seq_len(nrow(selected_fit_tbl)), function(i) {
+  rr <- selected_fit_tbl[i, , drop = FALSE]
+  x <- readRDS(rr$landscape_path)
+  x
+})
+names(selected_landscapes) <- selected_fit_tbl$patient_id
+
+combined_metrics <- compute_combined_landscape_metrics(selected_landscapes)
+saveRDS(combined_metrics, file.path(result_dir, "combined_metrics.rds"))
+
+combined_metrics$karyotypes_no_dup
+```
+
+## Panel B
+
+```{r panel-b}
+if (!focus_pid %in% fit_patient_ids) {
+  stop("focus_pid ", focus_pid, " is not available with both Primary and Recurrent samples.")
+}
+
+focus_manifest <- fit_manifest %>%
+  filter(pid == focus_pid) %>%
+  arrange(factor(Stage, levels = stage_levels))
+
+focus_profiles <- lapply(seq_len(nrow(focus_manifest)), function(i) {
+  rr <- focus_manifest[i, , drop = FALSE]
+  obj <- read_transcriptome_perspective(rr$rds_path)
+  obj
+})
+names(focus_profiles) <- focus_manifest$effective_id
+
+focus_chrom_cn <- build_chromosome_cn_from_profiles(focus_profiles)
+focus_timepoint_by_cell <- build_timepoint_by_cell(focus_manifest, focus_profiles)
+
+panel_b_pdf <- file.path(figure_dir, paste0("Panel_B_", focus_pid, "_ploidy_center.pdf"))
+save_ploidy_center_heatmap(
+  chromosome_cn = focus_chrom_cn,
+  timepoint_by_cell = focus_timepoint_by_cell,
+  output_pdf = panel_b_pdf,
+  timepoint_levels = stage_levels,
+  clustering_method = "ward.D",
+  pdf_size = 8
+)
+
+cat("Saved Panel B to:", panel_b_pdf)
+```
+
+## Panel C
+
+```{r panel-c}
+focus_landscape <- selected_landscapes[[focus_pid]]
+panel_c_plot <- make_focus_umap_plot(focus_landscape, focus_pid)
+panel_c_pdf <- file.path(figure_dir, paste0("Panel_C_", focus_pid, "_relative_diploid_umap.pdf"))
+save_plot_pdf(panel_c_plot, panel_c_pdf, width = 5.5, height = 5)
+panel_c_plot
+```
+
+## Panel D
+
+```{r panel-d}
+beneficial_list <- lapply(names(selected_landscapes), function(pid) {
+  beneficial_cnv_profile(selected_landscapes[[pid]])$proportion
+})
+names(beneficial_list) <- names(selected_landscapes)
+
+beneficial_mat <- do.call(rbind, beneficial_list)
+beneficial_mat <- beneficial_mat[sort_pid_levels(rownames(beneficial_mat)), , drop = FALSE]
+readr::write_tsv(
+  tibble::rownames_to_column(as.data.frame(beneficial_mat), var = "Patient"),
+  file.path(result_dir, "beneficial_karyotype_proportion_matrix.tsv")
+)
+
+panel_d_pdf <- file.path(figure_dir, "Panel_D_beneficial_karyotype_proportion_heatmap.pdf")
+col_fun_d <- circlize::colorRamp2(c(0, 0.5, 1), c("blue", "#EEEEEE", "red"))
+
+ht_d <- ComplexHeatmap::Heatmap(
+  beneficial_mat,
+  name = "Beneficial\nkaryotypes\nproportion",
+  col = col_fun_d,
+  cluster_rows = nrow(beneficial_mat) > 1,
+  cluster_columns = ncol(beneficial_mat) > 1,
+  show_row_names = TRUE,
+  show_column_names = TRUE,
+  row_names_gp = grid::gpar(fontsize = 8),
+  column_names_gp = grid::gpar(fontsize = 7),
+  rect_gp = grid::gpar(col = "white", lwd = 1)
+)
+
+grDevices::pdf(panel_d_pdf, width = 10, height = 4.5, useDingbats = FALSE)
+ComplexHeatmap::draw(ht_d, heatmap_legend_side = "right")
+grDevices::dev.off()
+
+cat("Saved Panel D to:", panel_d_pdf)
+```
+
+## Panel E
+
+```{r panel-e}
+panel_e_df <- combined_metrics$karyotypes_no_dup %>%
+  mutate(Nop = factor(Nop, levels = seq_len(combined_metrics$n_patients)))
+
+panel_e_plot <- ggplot(panel_e_df, aes(x = Nop, y = `No. of karyotypes`, fill = Nop)) +
+  geom_col(width = 0.8) +
+  geom_text(aes(label = `No. of karyotypes`), vjust = -0.4, size = 3) +
+  scale_fill_manual(values = grDevices::colorRampPalette(c("#7AD151", "#22A884", "#FCAE61", "#D73027"))(nrow(panel_e_df))) +
+  labs(
+    x = "Number of Patients",
+    y = "Number of Karyotypes"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+panel_e_pdf <- file.path(figure_dir, "Panel_E_karyotypes_by_patient_overlap.pdf")
+save_plot_pdf(panel_e_plot, panel_e_pdf, width = 5.5, height = 4.5)
+panel_e_plot
+```
+
+## Panel F
+
+```{r panel-f}
+shared_sig <- combined_metrics$results_corr_all %>%
+  filter(!is.na(Pvalue), !is.na(Correlation), Pvalue < 0.05, Correlation > 0) %>%
+  mutate(label = "shared")
+
+ubiq_sig <- combined_metrics$results_corr_ubiq %>%
+  filter(!is.na(Pvalue), !is.na(Correlation), Pvalue < 0.05, Correlation > 0) %>%
+  mutate(label = "ubiquitous")
+
+panel_f_df <- bind_rows(shared_sig, ubiq_sig) %>%
+  mutate(label = factor(label, levels = c("shared", "ubiquitous")))
+
+panel_f_plot <- if (length(unique(na.omit(panel_f_df$label))) >= 2 && nrow(panel_f_df) > 1) {
+  ggpubr::ggviolin(
+    panel_f_df,
+    x = "label",
+    y = "Correlation",
+    fill = "label",
+    add = "boxplot",
+    palette = c(shared = "#1F77B4", ubiquitous = "#FF7F0E")
+  ) +
+    ggpubr::stat_compare_means(
+      comparisons = list(c("shared", "ubiquitous")),
+      label = "p.format",
+      method = "t.test"
+    ) +
+    ggpubr::rremove("legend") +
+    labs(x = "Karyotype Type", y = "Pearson Correlation") +
+    theme_minimal()
+} else {
+  placeholder_plot("Insufficient shared/ubiquitous correlation data")
+}
+
+panel_f_pdf <- file.path(figure_dir, "Panel_F_shared_vs_ubiquitous_correlation_violin.pdf")
+save_plot_pdf(panel_f_plot, panel_f_pdf, width = 4.5, height = 4.5)
+panel_f_plot
+```
+
+## Panel G
+
+```{r panel-g}
+panel_g_df <- combined_metrics$results_corr_all %>%
+  mutate(
+    Patient1 = factor(Patient1, levels = combined_metrics$patient_ids),
+    Patient2 = factor(Patient2, levels = combined_metrics$patient_ids),
+    label = ifelse(
+      is.na(Pvalue),
+      "",
+      ifelse(Pvalue < 0.001, "***",
+             ifelse(Pvalue < 0.01, "**",
+                    ifelse(Pvalue < 0.05, "*", "")))
+    )
+  )
+
+panel_g_plot <- ggplot(panel_g_df, aes(x = Patient1, y = Patient2)) +
+  geom_point(aes(size = OverlapCount, color = Correlation)) +
+  geom_text(aes(label = label), vjust = -1, size = 3) +
+  scale_color_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, na.value = "grey80") +
+  labs(
+    title = "Pairwise Correlation of Shared Karyotype Fitness",
+    x = "",
+    y = "",
+    size = "Shared Karyotype\nOverlap Count",
+    color = "Correlation"
+  ) +
+  theme_minimal()
+
+panel_g_pdf <- file.path(figure_dir, "Panel_G_pairwise_shared_karyotype_correlation.pdf")
+save_plot_pdf(panel_g_plot, panel_g_pdf, width = 7, height = 6)
+panel_g_plot
+```
+
+## Output Files
+
+```{r output-summary}
+output_files <- tibble(
+  panel = c("B", "C", "D", "E", "F", "G"),
+  file = c(
+    panel_b_pdf,
+    panel_c_pdf,
+    panel_d_pdf,
+    panel_e_pdf,
+    panel_f_pdf,
+    panel_g_pdf
+  )
+)
+
+output_files
+```
+
+## Session Info
+
+```{r session-info}
+sessionInfo()
+```
