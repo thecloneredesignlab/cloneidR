@@ -6,7 +6,7 @@ output:
     toc_float: true
 params:
   focus_pid: "P2"
-  minobs: 10
+  minobs: 20
   minobs_values: [5, 10, 20]
   n_cores: 9
   pm_values: [5e-05]
@@ -306,12 +306,29 @@ save_alfak_input <- function(count_matrix, out_path) {
 
 extract_xval_metrics <- function(xv) {
   metrics <- list(
-    xval_r2 = if (!is.null(xv$R2R)) as.numeric(xv$R2R) else NA_real_,
+    xval_r2 = NA_real_,
     xval_cor = NA_real_,
     xval_rmse = NA_real_,
     xval_mae = NA_real_,
     n_xval = NA_integer_
   )
+
+  if (is.null(xv)) {
+    return(metrics)
+  }
+
+  if (is.atomic(xv) && is.numeric(xv) && is.null(dim(xv)) && length(xv) >= 1L) {
+    metrics$xval_r2 <- suppressWarnings(as.numeric(xv[[1]]))
+    return(metrics)
+  }
+
+  if (!is.list(xv)) {
+    return(metrics)
+  }
+
+  if (!is.null(xv$R2R)) {
+    metrics$xval_r2 <- suppressWarnings(as.numeric(xv$R2R))
+  }
 
   if (is.null(xv$tmp)) {
     return(metrics)
@@ -656,26 +673,109 @@ beneficial_cnv_profile <- function(landscape_df) {
   } else {
     as.character(fq_flag) %in% c("TRUE", "T", "true", "1")
   }
-  fq_df <- landscape_df[fq_keep, , drop = FALSE]
-  if (!nrow(fq_df)) {
-    fq_df <- landscape_df
+  nn_flag <- landscape_df$nn
+  nn_keep <- if (is.logical(nn_flag)) {
+    nn_flag
+  } else {
+    as.character(nn_flag) %in% c("TRUE", "T", "true", "1")
   }
 
-  fitness_map <- setNames(landscape_df$mean, landscape_df$k)
-  cnv_colnames <- as.vector(rbind(paste0(seq_len(22), "-"), paste0(seq_len(22), "+")))
-  delta_mat <- matrix(NA_real_, nrow = nrow(fq_df), ncol = 44, dimnames = list(fq_df$k, cnv_colnames))
+  k_vec <- as.character(landscape_df$k)
+  move_labels <- as.vector(rbind(paste0(seq_len(22), "+"), paste0(seq_len(22), "-")))
+  prop <- rep(NA_real_, length(move_labels))
+  valid_n <- integer(length(move_labels))
+  beneficial_n <- integer(length(move_labels))
+  names(prop) <- move_labels
+  names(valid_n) <- move_labels
+  names(beneficial_n) <- move_labels
 
-  for (i in seq_len(nrow(fq_df))) {
-    k0 <- fq_df$k[i]
-    f0 <- fq_df$mean[i]
-    nb_mat <- gen_all_neighbours(k0)
-    nb_strings <- apply(nb_mat, 1, paste, collapse = ".")
-    delta_mat[i, ] <- unname(fitness_map[nb_strings] - f0)
+  if (!length(k_vec)) {
+    return(list(
+      proportion = prop,
+      beneficial_n = beneficial_n,
+      valid_n = valid_n
+    ))
   }
 
-  prop <- colSums(delta_mat > 0, na.rm = TRUE) / nrow(delta_mat)
-  prop[is.na(prop)] <- 0
-  list(delta_mat = delta_mat, proportion = prop)
+  k_parts <- strsplit(k_vec, ".", fixed = TRUE)
+  part_lengths <- lengths(k_parts)
+  if (any(part_lengths != 22L)) {
+    bad_idx <- which(part_lengths != 22L)[1]
+    stop("Found karyotype with != 22 entries in beneficial_cnv_profile(): ", k_vec[bad_idx])
+  }
+  k_mat <- matrix(as.integer(unlist(k_parts, use.names = FALSE)), ncol = 22, byrow = TRUE)
+  fitness_vec <- as.numeric(landscape_df$mean)
+
+  starts <- which(fq_keep %in% TRUE)
+  if (!length(starts)) {
+    return(list(
+      proportion = prop,
+      beneficial_n = beneficial_n,
+      valid_n = valid_n
+    ))
+  }
+
+  edge_rows <- vector("list", length(starts))
+  edge_idx <- 0L
+  for (from in starts) {
+    v <- k_mat[from, ]
+    neigh_mat <- matrix(rep(v, each = 44L), nrow = 44L, ncol = 22)
+    for (chr in seq_len(22)) {
+      plus_row <- 2L * chr - 1L
+      minus_row <- 2L * chr
+      neigh_mat[plus_row, chr] <- neigh_mat[plus_row, chr] + 1L
+      neigh_mat[minus_row, chr] <- neigh_mat[minus_row, chr] - 1L
+    }
+
+    neigh_str <- do.call(paste, c(as.data.frame(neigh_mat), sep = "."))
+    to <- match(neigh_str, k_vec)
+    valid <- !is.na(to)
+    if (any(valid)) {
+      valid[valid] <- nn_keep[to[valid]] %in% TRUE
+    }
+    if (!any(valid)) {
+      next
+    }
+
+    to_valid <- to[valid]
+    move_valid <- move_labels[valid]
+    delta <- fitness_vec[to_valid] - fitness_vec[from]
+    ok <- is.finite(delta)
+    benefit <- rep(NA, length(delta))
+    benefit[ok] <- delta[ok] > 0
+
+    edge_idx <- edge_idx + 1L
+    edge_rows[[edge_idx]] <- data.frame(
+      move = move_valid,
+      ok = ok,
+      benefit = benefit,
+      stringsAsFactors = FALSE
+    )
+  }
+
+  if (edge_idx > 0L) {
+    edges_df <- dplyr::bind_rows(edge_rows[seq_len(edge_idx)])
+    for (mv in move_labels) {
+      ii <- which(edges_df$move == mv)
+      if (!length(ii)) {
+        next
+      }
+      sub <- edges_df[ii, , drop = FALSE]
+      ok <- sub$ok %in% TRUE
+      valid_n[mv] <- sum(ok)
+      if (!valid_n[mv]) {
+        next
+      }
+      beneficial_n[mv] <- sum(sub$benefit[ok] %in% TRUE, na.rm = TRUE)
+      prop[mv] <- beneficial_n[mv] / valid_n[mv]
+    }
+  }
+
+  list(
+    proportion = prop,
+    beneficial_n = beneficial_n,
+    valid_n = valid_n
+  )
 }
 
 parse_segment_table <- function(segment_names) {
@@ -813,6 +913,7 @@ save_ploidy_center_heatmap <- function(chromosome_cn,
     heatmap_legend_side = "right",
     annotation_legend_side = "right"
   )
+  invisible(ht)
 }
 
 make_focus_umap_plot <- function(landscape_df, patient_id) {
@@ -927,50 +1028,35 @@ if (!requireNamespace("foreach", quietly = TRUE) || !requireNamespace("doParalle
   stop("Packages 'foreach' and 'doParallel' are required for parallel ALFA-K fitting.")
 }
 
-fit_tasks_tbl <- expand.grid(
-  patient_id = fit_patient_ids,
-  minobs = minobs_values_use,
-  stringsAsFactors = FALSE
-)
-fit_tasks_tbl$input_rds <- file.path(input_dir, paste0(fit_tasks_tbl$patient_id, ".Rds"))
-fit_tasks_tbl <- fit_tasks_tbl[file.exists(fit_tasks_tbl$input_rds), , drop = FALSE]
-fit_tasks_tbl <- fit_tasks_tbl %>%
-  dplyr::arrange(factor(patient_id, levels = fit_patient_ids), minobs)
+fit_summary_path <- file.path(result_dir, "fit_summary.tsv")
+selected_fit_path <- file.path(result_dir, "selected_fit.tsv")
 
-if (!nrow(fit_tasks_tbl)) {
-  stop("No ALFA-K fitting tasks were constructed.")
-}
-
-n_cores_fit <- max(1L, min(n_cores_use, nrow(fit_tasks_tbl)))
-message("Dispatching ", nrow(fit_tasks_tbl), " ALFA-K tasks across ", n_cores_fit, " core(s).")
-
-readr::write_tsv(fit_tasks_tbl, file.path(result_dir, "alfak_task_index.tsv"))
-
-if (n_cores_fit == 1L) {
-  fit_task_results <- lapply(seq_len(nrow(fit_tasks_tbl)), function(i) {
-    rr <- fit_tasks_tbl[i, , drop = FALSE]
-    fit_patient_minobs_task(
-      patient_id = rr$patient_id,
-      input_rds = rr$input_rds,
-      fit_root = fit_dir,
-      pm_values = pm_values,
-      minobs = rr$minobs,
-      nboot = nboot_use,
-      n0 = n0_use,
-      nb = nb_use,
-      correct_efflux = correct_efflux_use,
-      force_refit = force_refit
-    )
-  })
+if (!force_refit && file.exists(fit_summary_path) && file.exists(selected_fit_path)) {
+  message("Reusing existing fit_summary.tsv and selected_fit.tsv; skipping ALFA-K task dispatch.")
+  fit_summary_tbl <- readr::read_tsv(fit_summary_path, show_col_types = FALSE)
+  selected_fit_tbl <- readr::read_tsv(selected_fit_path, show_col_types = FALSE)
 } else {
-  cl <- parallel::makeCluster(n_cores_fit)
-  parallel::clusterSetRNGStream(cl, iseed = 31415926)
-  doParallel::registerDoParallel(cl)
-  fit_task_results <- tryCatch({
-    foreach::foreach(
-      i = seq_len(nrow(fit_tasks_tbl)),
-      .packages = c("alfakR", "dplyr")
-    ) %dopar% {
+  fit_tasks_tbl <- expand.grid(
+    patient_id = fit_patient_ids,
+    minobs = minobs_values_use,
+    stringsAsFactors = FALSE
+  )
+  fit_tasks_tbl$input_rds <- file.path(input_dir, paste0(fit_tasks_tbl$patient_id, ".Rds"))
+  fit_tasks_tbl <- fit_tasks_tbl[file.exists(fit_tasks_tbl$input_rds), , drop = FALSE]
+  fit_tasks_tbl <- fit_tasks_tbl %>%
+    dplyr::arrange(factor(patient_id, levels = fit_patient_ids), minobs)
+
+  if (!nrow(fit_tasks_tbl)) {
+    stop("No ALFA-K fitting tasks were constructed.")
+  }
+
+  n_cores_fit <- max(1L, min(n_cores_use, nrow(fit_tasks_tbl)))
+  message("Dispatching ", nrow(fit_tasks_tbl), " ALFA-K tasks across ", n_cores_fit, " core(s).")
+
+  readr::write_tsv(fit_tasks_tbl, file.path(result_dir, "alfak_task_index.tsv"))
+
+  if (n_cores_fit == 1L) {
+    fit_task_results <- lapply(seq_len(nrow(fit_tasks_tbl)), function(i) {
       rr <- fit_tasks_tbl[i, , drop = FALSE]
       fit_patient_minobs_task(
         patient_id = rr$patient_id,
@@ -984,24 +1070,50 @@ if (n_cores_fit == 1L) {
         correct_efflux = correct_efflux_use,
         force_refit = force_refit
       )
-    }
-  }, finally = {
-    try(parallel::stopCluster(cl), silent = TRUE)
-    foreach::registerDoSEQ()
-  })
-}
+    })
+  } else {
+    cl <- parallel::makeCluster(n_cores_fit)
+    parallel::clusterSetRNGStream(cl, iseed = 31415926)
+    doParallel::registerDoParallel(cl)
+    fit_task_results <- tryCatch({
+      foreach::foreach(
+        i = seq_len(nrow(fit_tasks_tbl)),
+        .packages = c("alfakR", "dplyr")
+      ) %dopar% {
+        rr <- fit_tasks_tbl[i, , drop = FALSE]
+        fit_patient_minobs_task(
+          patient_id = rr$patient_id,
+          input_rds = rr$input_rds,
+          fit_root = fit_dir,
+          pm_values = pm_values,
+          minobs = rr$minobs,
+          nboot = nboot_use,
+          n0 = n0_use,
+          nb = nb_use,
+          correct_efflux = correct_efflux_use,
+          force_refit = force_refit
+        )
+      }
+    }, finally = {
+      try(parallel::stopCluster(cl), silent = TRUE)
+      foreach::registerDoSEQ()
+    })
+  }
 
-fit_summary_tbl <- dplyr::bind_rows(fit_task_results)
-fit_selection <- select_best_fit_tbl(fit_summary_tbl)
-fit_summary_tbl <- fit_selection$all
-selected_fit_tbl <- fit_selection$best
+  saveRDS(fit_task_results, file.path(result_dir, "fit_task_results.Rds"))
+
+  fit_summary_tbl <- dplyr::bind_rows(fit_task_results)
+  fit_selection <- select_best_fit_tbl(fit_summary_tbl)
+  fit_summary_tbl <- fit_selection$all
+  selected_fit_tbl <- fit_selection$best
+
+  readr::write_tsv(fit_summary_tbl, fit_summary_path)
+  readr::write_tsv(selected_fit_tbl, selected_fit_path)
+}
 
 if (nrow(selected_fit_tbl) != length(fit_patient_ids)) {
   stop("Expected one selected fit per patient; got ", nrow(selected_fit_tbl), " rows for ", length(fit_patient_ids), " patients.")
 }
-
-readr::write_tsv(fit_summary_tbl, file.path(result_dir, "fit_summary.tsv"))
-readr::write_tsv(selected_fit_tbl, file.path(result_dir, "selected_fit.tsv"))
 
 selected_fit_tbl %>%
   arrange(factor(patient_id, levels = sort_pid_levels(patient_id)))
@@ -1045,13 +1157,19 @@ focus_chrom_cn <- build_chromosome_cn_from_profiles(focus_profiles)
 focus_timepoint_by_cell <- build_timepoint_by_cell(focus_manifest, focus_profiles)
 
 panel_b_pdf <- file.path(figure_dir, paste0("Panel_B_", focus_pid, "_ploidy_center.pdf"))
-save_ploidy_center_heatmap(
+panel_b_ht <- save_ploidy_center_heatmap(
   chromosome_cn = focus_chrom_cn,
   timepoint_by_cell = focus_timepoint_by_cell,
   output_pdf = panel_b_pdf,
   timepoint_levels = stage_levels,
   clustering_method = "ward.D",
   pdf_size = 8
+)
+ComplexHeatmap::draw(
+  panel_b_ht,
+  merge_legends = TRUE,
+  heatmap_legend_side = "right",
+  annotation_legend_side = "right"
 )
 
 cat("Saved Panel B to:", panel_b_pdf)
@@ -1070,10 +1188,13 @@ panel_c_plot
 ## Panel D
 
 ```{r panel-d}
-beneficial_list <- lapply(names(selected_landscapes), function(pid) {
-  beneficial_cnv_profile(selected_landscapes[[pid]])$proportion
+beneficial_profiles <- lapply(names(selected_landscapes), function(pid) {
+  beneficial_cnv_profile(selected_landscapes[[pid]])
 })
-names(beneficial_list) <- names(selected_landscapes)
+names(beneficial_profiles) <- names(selected_landscapes)
+
+beneficial_list <- lapply(beneficial_profiles, function(x) x$proportion)
+beneficial_valid_n_list <- lapply(beneficial_profiles, function(x) x$valid_n)
 
 beneficial_mat <- do.call(rbind, beneficial_list)
 beneficial_mat <- beneficial_mat[sort_pid_levels(rownames(beneficial_mat)), , drop = FALSE]
@@ -1082,15 +1203,25 @@ readr::write_tsv(
   file.path(result_dir, "beneficial_karyotype_proportion_matrix.tsv")
 )
 
+beneficial_valid_n_mat <- do.call(rbind, beneficial_valid_n_list)
+beneficial_valid_n_mat <- beneficial_valid_n_mat[sort_pid_levels(rownames(beneficial_valid_n_mat)), , drop = FALSE]
+readr::write_tsv(
+  tibble::rownames_to_column(as.data.frame(beneficial_valid_n_mat), var = "Patient"),
+  file.path(result_dir, "beneficial_karyotype_valid_move_count_matrix.tsv")
+)
+
 panel_d_pdf <- file.path(figure_dir, "Panel_D_beneficial_karyotype_proportion_heatmap.pdf")
 col_fun_d <- circlize::colorRamp2(c(0, 0.5, 1), c("blue", "#EEEEEE", "red"))
+panel_d_mat <- beneficial_mat
+panel_d_mat[!is.finite(panel_d_mat)] <- 0
 
 ht_d <- ComplexHeatmap::Heatmap(
-  beneficial_mat,
+  panel_d_mat,
   name = "Beneficial\nkaryotypes\nproportion",
   col = col_fun_d,
-  cluster_rows = nrow(beneficial_mat) > 1,
-  cluster_columns = ncol(beneficial_mat) > 1,
+  cluster_rows = nrow(panel_d_mat) > 1,
+  cluster_columns = ncol(panel_d_mat) > 1,
+  na_col = "#BDBDBD",
   show_row_names = TRUE,
   show_column_names = TRUE,
   row_names_gp = grid::gpar(fontsize = 8),
@@ -1101,6 +1232,7 @@ ht_d <- ComplexHeatmap::Heatmap(
 grDevices::pdf(panel_d_pdf, width = 10, height = 4.5, useDingbats = FALSE)
 ComplexHeatmap::draw(ht_d, heatmap_legend_side = "right")
 grDevices::dev.off()
+ComplexHeatmap::draw(ht_d, heatmap_legend_side = "right")
 
 cat("Saved Panel D to:", panel_d_pdf)
 ```

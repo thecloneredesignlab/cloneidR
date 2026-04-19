@@ -4,3 +4,13 @@ analysis/figure_primary_use_case/input/subtree/panelA.zip
 analysis/figure_primary_use_case/input/subtree/panelDE.zip
 /analysis/figure_primary_use_case/output
 analysis/figure_primary_use_case/figure_primary_use_case.html
+/analysis/FigureS5/generated
+/analysis/FigureS5/data
+/.gradle
+*.html
+analysis/FigureS5/ALFAK_new_vs_old_P2_summary_word.md
+analysis/FigureS5/ALFAK_new_vs_old_P2_summary_latex.tex
+/analysis/FigureS5/generated_old_version
+analysis/FigureS5/ALFAK_new_vs_old_P2_comparison.Rmd
+analysis/figure_primary_use_case/test.yaml
+main_briefComm.tex
