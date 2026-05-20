@@ -105,31 +105,64 @@ feed <- function(id, tx=Sys.time()){
 }
 
 
-getPedigreeTree <- function (cellLine = cellLine, id = NULL, cex = 0.5){
+getPedigreeTree <- function (cellLine = cellLine, id = NULL, cex = 0.5, highlight = NULL, topology = c("internal", "legacy"), outputFile = NA_character_){
   library(RMySQL)
   library(ape)
+  topology = match.arg(topology)
+  .sanitize_filename_part <- function(x) {
+    x = paste(x, collapse = "__")
+    x = gsub("[^A-Za-z0-9._-]+", "_", x)
+    x = gsub("^_+|_+$", "", x)
+    if (nchar(x) == 0) {
+      x = "pedigree"
+    }
+    x
+  }
+  .default_output_file <- function(cellLine, id, highlight) {
+    stem = if (!is.null(highlight) && length(highlight) > 0) {
+      paste0(.sanitize_filename_part(cellLine), "_pedigree_", .sanitize_filename_part(highlight))
+    } else if (!is.null(id)) {
+      paste0(.sanitize_filename_part(cellLine), "_pedigree_", .sanitize_filename_part(id))
+    } else {
+      paste0(.sanitize_filename_part(cellLine), "_pedigree")
+    }
+    file.path(path.expand("~/Downloads"), paste0(stem, "_", format(Sys.time(), "%Y%m%dT%H%M%S"), ".pdf"))
+  }
   if (is.null(id)) {
     mydb = connect2DB()
-    stmt = paste0("select * from Passaging where cellLine = '", 
+    stmt = paste0("select * from Passaging where cellLine = '",
                   cellLine, "'")
     rs = suppressWarnings(dbSendQuery(mydb, stmt))
     kids = fetch(rs, n = -1)
     dbClearResult(dbListResults(mydb)[[1]])
     dbDisconnect(mydb)
   } else {
-    kids = findAllDescendandsOf(id)
+    kids = findAllDescendandsOf(id, verbose = FALSE)
   }
   kids = kids[sort(kids$date, index.return = T)$ix, , drop = F]
   kids = kids[sort(kids$passage, index.return = T)$ix, , drop = F]
   rownames(kids) = kids$id
-  .gatherDescendands <- function(kids, x) {
+  .build_internal_subtree <- function(kids, x) {
     ii = grep(paste0("^",x,"$"), kids$passaged_from_id1, ignore.case = T )
-    if (isempty(ii)) {
+    if (length(ii) == 0) {
+      return(x)
+    }
+    children = character(0)
+    for (i in ii) {
+      dx = kids$passage[i]
+      child = .build_internal_subtree(kids, kids$id[i])
+      children = c(children, paste0(child, ":", dx))
+    }
+    return(paste0("(", paste(children, collapse = ","), ")", x))
+  }
+  .build_legacy_subtree <- function(kids, x) {
+    ii = grep(paste0("^",x,"$"), kids$passaged_from_id1, ignore.case = T )
+    if (length(ii) == 0) {
       return("")
     }
     TREE_ = "("
     for (i in ii) {
-      y = .gatherDescendands(kids, kids$id[i])
+      y = .build_legacy_subtree(kids, kids$id[i])
       if (nchar(y) > 0) {
         y = paste0(y, ":1,")
       }
@@ -139,16 +172,168 @@ getPedigreeTree <- function (cellLine = cellLine, id = NULL, cex = 0.5){
     TREE_ = gsub(",$", ")", TREE_)
     return(TREE_)
   }
-  x = kids$id[1]
-  TREE_ = .gatherDescendands(kids, x)
-  TREE = paste0("(", TREE_, ":1,", x, ":1);")
+  x = if (is.null(id)) kids$id[1] else id
+  TREE = switch(
+    topology,
+    internal = paste0(.build_internal_subtree(kids, x), ";"),
+    legacy = paste0("(", .build_legacy_subtree(kids, x), ":1,", x, ":1);")
+  )
   tr <- read.tree(text = TREE)
-  str(tr)
+  tree.depth = max(ape::node.depth.edgelength(tr))
+  if (!is.finite(tree.depth) || tree.depth <= 0) {
+    tree.depth = max(1, nrow(tr$edge))
+  }
+  left.pad = 0.12 * tree.depth + 1
+  right.pad = 0.4 * tree.depth + 1
   col = c("blue", "red")
   names(col) = c("seeding", "harvest")
-  plot(tr, underscore = T, cex = cex, tip.color = col[kids[tr$tip.label, 
-  ]$event])
-  legend("topright", names(col), fill = col, bty = "n")
+  all.labels = c(tr$tip.label, tr$node.label)
+  all.events = kids[all.labels, "event"]
+  names(all.events) = all.labels
+  all.colors = col[all.events]
+  names(all.colors) = all.labels
+  liquidNitrogenIDs = character(0)
+  ln.db = try(connect2DB(), silent = TRUE)
+  if (!inherits(ln.db, "try-error")) {
+    on.exit(try(dbDisconnect(ln.db), silent = TRUE), add = TRUE)
+    ln.query.ids = paste0("'", paste(all.labels, collapse = "','"), "'")
+    ln.query = paste0("select distinct id from LiquidNitrogen where id IN (", ln.query.ids, ")")
+    ln.rows = try(dbGetQuery(ln.db, ln.query), silent = TRUE)
+    if (!inherits(ln.rows, "try-error") && "id" %in% names(ln.rows)) {
+      liquidNitrogenIDs = unique(stats::na.omit(as.character(ln.rows$id)))
+    }
+  }
+  all.fonts = ifelse(all.labels %in% liquidNitrogenIDs, 2, 1)
+  names(all.fonts) = all.labels
+  tip.color = all.colors[tr$tip.label]
+  node.color = all.colors[tr$node.label]
+  tip.event = all.events[tr$tip.label]
+  node.event = all.events[tr$node.label]
+  tip.font = all.fonts[tr$tip.label]
+  node.font = all.fonts[tr$node.label]
+  edge.color = rep("black", nrow(tr$edge))
+  edge.width = rep(1, nrow(tr$edge))
+  highlightLegend = NULL
+  highlightTips = integer(0)
+  highlightTipColors = character(0)
+  highlightNodes = integer(0)
+  highlightNodeColors = character(0)
+  if (!is.null(highlight)) {
+    highlight = unique(as.character(highlight))
+    root.node = setdiff(tr$edge[,1], tr$edge[,2])[1]
+    all.nodes = c(seq_along(tr$tip.label), seq_along(tr$node.label) + length(tr$tip.label))
+    names(all.nodes) = all.labels
+    highlight.palette = c("darkgreen", "purple3", "dodgerblue3", "darkorange3", "goldenrod4", "deeppink3")
+    edge.hits = integer(nrow(tr$edge))
+    edge.first.color = rep(NA_character_, nrow(tr$edge))
+    missing.highlight = setdiff(highlight, names(all.nodes))
+    highlight = intersect(highlight, names(all.nodes))
+    if (length(missing.highlight) > 0) {
+      warning("highlight IDs not found in plotted tree: ", paste(missing.highlight, collapse = ", "))
+    }
+    .collect_path_edges <- function(target.node) {
+      path.edges = integer(0)
+      current.node = target.node
+      while (!is.na(current.node) && current.node != root.node) {
+        edge.idx = match(current.node, tr$edge[,2])
+        if (is.na(edge.idx)) {
+          break
+        }
+        path.edges = c(edge.idx, path.edges)
+        current.node = tr$edge[edge.idx,1]
+      }
+      return(path.edges)
+    }
+    for (i in seq_along(highlight)) {
+      target.id = highlight[i]
+      target.node = unname(all.nodes[target.id])
+      target.color = highlight.palette[1 + ((i - 1) %% length(highlight.palette))]
+      path.edges = .collect_path_edges(target.node)
+      if (length(path.edges) > 0) {
+        first.hit = edge.hits[path.edges] == 0
+        edge.first.color[path.edges[first.hit]] = target.color
+        edge.hits[path.edges] = edge.hits[path.edges] + 1
+      }
+      if (target.node <= length(tr$tip.label)) {
+        highlightTips = c(highlightTips, target.node)
+        highlightTipColors = c(highlightTipColors, target.color)
+      } else {
+        highlightNodes = c(highlightNodes, target.node)
+        highlightNodeColors = c(highlightNodeColors, target.color)
+      }
+    }
+    edge.color[edge.hits >= 1] = edge.first.color[edge.hits >= 1]
+    edge.width[edge.hits == 1] = 3
+    edge.width[edge.hits > 1] = 4
+    highlightLegend = data.frame(
+      label = highlight,
+      color = highlight.palette[1 + ((seq_along(highlight) - 1) %% length(highlight.palette))],
+      stringsAsFactors = FALSE
+    )
+  }
+  label.depths = ape::node.depth.edgelength(tr)
+  all.depths = label.depths[c(seq_along(tr$tip.label), seq_along(tr$node.label) + length(tr$tip.label))]
+  if (length(all.depths) == 0) {
+    all.depths = 0
+  }
+  depth.breaks = unique(round(seq(0, max(all.depths, 0), length.out = min(12, max(2, length(all.depths)))), 2))
+  if (length(depth.breaks) < 2) {
+    depth.breaks = c(0, max(all.depths, 0) + 1)
+  }
+  depth.bucket = cut(all.depths, breaks = depth.breaks, include.lowest = TRUE, labels = FALSE)
+  max.bucket.load = max(tabulate(depth.bucket, nbins = max(depth.bucket, na.rm = TRUE)), 1)
+  total.labels = length(all.labels)
+  max.label.chars = max(nchar(all.labels), 1)
+  n.internal = length(tr$node.label)
+  pdf.width = max(11, min(30, 6 + 0.45 * tree.depth + 0.09 * max.label.chars + 0.02 * total.labels))
+  pdf.height = max(8, min(60, 4 + 0.28 * length(tr$tip.label) + 0.12 * n.internal + 0.2 * max.bucket.load))
+  .draw_tree <- function() {
+    plot(tr, underscore = T, cex = cex, edge.color = edge.color, edge.width = edge.width, show.tip.label = FALSE, no.margin = FALSE, x.lim = c(-left.pad, tree.depth + right.pad))
+    lp = get("last_plot.phylo", envir = .PlotPhyloEnv)
+    .draw_event_labels <- function(labels, events, cols, fonts, xs, ys, cex, internal = FALSE) {
+      if (length(labels) == 0) {
+        return()
+      }
+      harvest = which(events == "harvest")
+      seeding = which(events == "seeding")
+      if (length(harvest) > 0) {
+        text(xs[harvest], ys[harvest], labels[harvest], col = cols[harvest], font = fonts[harvest], cex = cex,
+             pos = if (internal) 2 else 4, offset = if (internal) 0.2 else 0.1, xpd = TRUE)
+      }
+      if (length(seeding) > 0) {
+        text(xs[seeding], ys[seeding], labels[seeding], col = cols[seeding], font = fonts[seeding], cex = cex,
+             srt = 35, adj = if (internal) c(1, 0.5) else c(0, 0.5), xpd = TRUE)
+      }
+    }
+    .draw_event_labels(tr$tip.label, tip.event, tip.color, tip.font, lp$xx[seq_along(tr$tip.label)], lp$yy[seq_along(tr$tip.label)], cex)
+    if (length(tr$node.label) > 0) {
+      node.ids = seq_along(tr$node.label) + length(tr$tip.label)
+      .draw_event_labels(tr$node.label, node.event, node.color, node.font, lp$xx[node.ids], lp$yy[node.ids], cex * 0.8, internal = TRUE)
+    }
+    if (length(highlightTips) > 0) {
+      tiplabels(pch = 21, bg = highlightTipColors, col = highlightTipColors, tip = highlightTips, cex = 1.2)
+    }
+    if (length(highlightNodes) > 0) {
+      nodelabels(pch = 21, bg = highlightNodeColors, col = highlightNodeColors, node = highlightNodes, cex = 1.2)
+    }
+    legend("topright", names(col), fill = col, bty = "n")
+    if (!is.null(highlightLegend) && nrow(highlightLegend) > 0) {
+      legend("bottomleft", legend = highlightLegend$label, fill = highlightLegend$color, bty = "n", title = "Highlighted paths")
+    }
+  }
+  if (is.character(outputFile) && length(outputFile) == 1 && is.na(outputFile)) {
+    outputFile = .default_output_file(cellLine, id, highlight)
+  }
+  if (!is.null(outputFile)) {
+    dir.create(dirname(outputFile), recursive = TRUE, showWarnings = FALSE)
+    grDevices::pdf(outputFile, width = pdf.width, height = pdf.height)
+    on.exit(grDevices::dev.off(), add = TRUE)
+    .draw_tree()
+  } else {
+    .draw_tree()
+  }
+  attr(tr, "outputFile") = outputFile
+  attr(tr, "pdfDimensions") = c(width = pdf.width, height = pdf.height)
   return(tr)
 }
 
