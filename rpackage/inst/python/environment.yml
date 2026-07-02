@@ -7,12 +7,15 @@ dependencies:
   - python=3.10
   - numpy<2
   - scipy
-  - opencv=4.7
+  - opencv
   - pip
   - imagecodecs
   - numba>=0.55
   - pandas
   - pillow
+  - scikit-image
+  - scikit-learn
+  - matplotlib
   - python-dateutil
   - pytz
   - setuptools
@@ -20,9 +23,9 @@ dependencies:
   - tifffile
   - tqdm
   - typing-extensions
-  - pytorch>=1.10   # Use conda installation from the pytorch channel
+  - pytorch>=2.0   # Use conda installation from the pytorch channel
   - pip:
-    - cellpose==2.1.0
+    - cellpose==4.0.7
     - fastremap
     - easyocr
     - llvmlite
