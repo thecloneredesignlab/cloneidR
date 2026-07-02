@@ -855,7 +855,7 @@ plotLiquidNitrogenBox <- function (rack, row) {
       param=as.list(cpp["default",])
     }
   }
-  param$cellposeModel=paste0(find.package("cloneid"),filesep,"python",filesep, param$cellposeModel)
+  param$cellposeModel=.resolve_cellpose_model(param$cellposeModel)
   print(param)
   run(TMP_DIR,normalizePath(param$cellposeModel),TMP_DIR,".tif", as.character(param$diameter), as.character(param$flow_threshold), as.character(param$cellprob_threshold))
   
